@@ -2,10 +2,13 @@
 // Même Chromium et même extension que les autres suites (écran ×2). Le PDF est contrôlé avec pdfinfo et pdftoppm, le zip avec unzip et python3.
 // Usage : node lot1.mjs <dossier de sortie> [base|paste|zip|export|export-long|webimage] [motif]
 
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { EXTENSION, MANIFEST_EXPECTED, check, extensionPage, launch, prepareExtension, results } from './lib.mjs';
 
+const run = promisify(execFile);
 const WORK = path.resolve(process.argv[2] ?? path.join(import.meta.dirname, 'out-lot1'));
 const ONLY = process.argv[3];
 const NAMED = process.argv[4] ? new RegExp(process.argv[4], 'i') : null;
@@ -250,6 +253,104 @@ async function groupPaste(context) {
     }));
 }
 
+// --- Écrire un zip ---
+
+// Relit un fichier de la page (Blob) en octets, côté Node.
+async function blobToFile(page, handle, file) {
+  const base64 = await page.evaluate(async (blob) => {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let text = '';
+    for (let i = 0; i < bytes.length; i += 32768) text += String.fromCharCode(...bytes.subarray(i, i + 32768));
+    return btoa(text);
+  }, handle);
+  await fs.writeFile(file, Buffer.from(base64, 'base64'));
+  return file;
+}
+
+// Lecteur indépendant : noms exacts (décodés selon le bit 11) et empreinte SHA-256 de chaque entrée.
+const PY_ZIP = `import hashlib, json, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+print(json.dumps([{'name': i.filename, 'size': i.file_size, 'method': i.compress_type, 'flag': i.flag_bits, 'sha': hashlib.sha256(z.read(i)).hexdigest()} for i in z.infolist()]))`;
+const readZip = async (file) => JSON.parse((await run('python3', ['-c', PY_ZIP, file])).stdout);
+
+async function groupZip(context) {
+  console.log('\n— Écrire un zip');
+  const dir = path.join(WORK, 'zip');
+  await fs.mkdir(dir, { recursive: true });
+  const page = await extensionPage(context, 'convert/convert.html');
+  try {
+    // Trois entrées, dont une de 3 Mio : le CRC est lu par morceaux, et doit rester juste à travers eux.
+    const handle = await page.evaluateHandle(async () => {
+      const { ZipWriter } = await import(chrome.runtime.getURL('viewer/zip.js'));
+      const big = new Uint8Array(3 * 1024 * 1024);
+      for (let i = 0; i < big.length; i++) big[i] = (i * 31 + (i >> 8)) & 255;
+      const zip = new ZipWriter();
+      await zip.add('image-01.png', new Blob([new Uint8Array([1, 2, 3, 4])]));
+      await zip.add('photo été à Noël.jpg', new Blob(['contenu accentué']));
+      await zip.add('grande.bin', new Blob([big]));
+      return zip.finish();
+    });
+    const file = await blobToFile(page, handle, path.join(dir, 'essai.zip'));
+    await test('zip : unzip -t accepte le fichier', async () => {
+      const { stdout } = await run('unzip', ['-t', file]);
+      return { ok: /No errors detected/.test(stdout), detail: stdout.trim().split('\n').pop() };
+    });
+    await test('zip : le lecteur Python relit noms et octets', async () => {
+      const entries = await readZip(file);
+      const { createHash } = await import('node:crypto');
+      const sha = (data) => createHash('sha256').update(data).digest('hex');
+      const big = Buffer.alloc(3 * 1024 * 1024);
+      for (let i = 0; i < big.length; i++) big[i] = (i * 31 + (i >> 8)) & 255;
+      const expected = [Buffer.from([1, 2, 3, 4]), Buffer.from('contenu accentué'), big].map(sha);
+      const ok = entries.length === 3 && entries.every((entry, i) => entry.sha === expected[i] && entry.method === 0);
+      return { ok, detail: entries.map((entry) => `${entry.name} ${entry.size}`).join(' | ') };
+    });
+    await test('zip : un nom accentué reste juste', async () => {
+      const entries = await readZip(file);
+      return { ok: entries[1].name === 'photo été à Noël.jpg' && (entries[1].flag & 0x800) !== 0, detail: entries[1].name };
+    });
+    await test('zip : l’archive vide est valide', async () => {
+      const empty = await page.evaluateHandle(async () => {
+        const { ZipWriter } = await import(chrome.runtime.getURL('viewer/zip.js'));
+        return new ZipWriter().finish();
+      });
+      const entries = await readZip(await blobToFile(page, empty, path.join(dir, 'vide.zip')));
+      return { ok: entries.length === 0, detail: `${entries.length} entrée` };
+    });
+    await test('zip : ZipTooBig au-delà de la limite d’entrées', async () => {
+      const outcome = await page.evaluate(async () => {
+        const { ZipWriter, ZipTooBig } = await import(chrome.runtime.getURL('viewer/zip.js'));
+        const zip = new ZipWriter({ maxEntries: 2 });
+        await zip.add('a', new Blob(['a']));
+        await zip.add('b', new Blob(['b']));
+        try {
+          await zip.add('c', new Blob(['c']));
+          return 'accepté';
+        } catch (err) {
+          return err instanceof ZipTooBig ? 'ZipTooBig' : String(err);
+        }
+      });
+      return { ok: outcome === 'ZipTooBig', detail: outcome };
+    });
+    await test('zip : ZipTooBig au-delà de la limite d’octets', async () => {
+      const outcome = await page.evaluate(async () => {
+        const { ZipWriter, ZipTooBig } = await import(chrome.runtime.getURL('viewer/zip.js'));
+        const zip = new ZipWriter({ maxBytes: 300 });
+        await zip.add('a', new Blob([new Uint8Array(100)]));
+        try {
+          await zip.add('b', new Blob([new Uint8Array(100)]));
+          return 'accepté';
+        } catch (err) {
+          return err instanceof ZipTooBig ? 'ZipTooBig' : String(err);
+        }
+      });
+      return { ok: outcome === 'ZipTooBig', detail: outcome };
+    });
+  } finally {
+    await page.close();
+  }
+}
+
 async function main() {
   await fs.rm(WORK, { recursive: true, force: true });
   await fs.mkdir(WORK, { recursive: true });
@@ -257,7 +358,7 @@ async function main() {
   const context = await launch(extension, 'profile', WORK);
   try {
     context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
-    const groups = { base: groupBase, paste: groupPaste };
+    const groups = { base: groupBase, paste: groupPaste, zip: groupZip };
     for (const [name, group] of Object.entries(groups)) {
       if (ONLY && ONLY !== name) continue;
       await group(context);
