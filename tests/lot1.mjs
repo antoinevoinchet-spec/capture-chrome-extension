@@ -5,9 +5,10 @@
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { EXTENSION, MANIFEST_EXPECTED, check, extensionPage, launch, prepareExtension, results, seedCapture } from './lib.mjs';
+import { EXTENSION, MANIFEST_EXPECTED, check, extensionPage, launch, openTab, prepareExtension, results, seedCapture } from './lib.mjs';
 
 const run = promisify(execFile);
 const WORK = path.resolve(process.argv[2] ?? path.join(import.meta.dirname, 'out-lot1'));
@@ -934,6 +935,434 @@ async function groupExportLong(context, profile) {
   await page.close();
 }
 
+// --- Clic droit sur une image ---
+
+const FIXTURES = path.join(import.meta.dirname, 'fixtures');
+const MB = 1024 * 1024;
+
+// Un PNG qui annonce des dimensions énormes : seul l'en-tête est valide, et il ne doit jamais être décodé.
+function hugePng(width, height) {
+  const head = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(head);
+  head.writeUInt32BE(13, 8);
+  head.write('IHDR', 12, 'latin1');
+  head.writeUInt32BE(width, 16);
+  head.writeUInt32BE(height, 20);
+  head[24] = 8;
+  head[25] = 6;
+  return Buffer.concat([head, Buffer.alloc(64)]);
+}
+
+// Le vrai AVIF de 2 × 2 px, dont la case de dimensions annonce désormais `size` × `size`.
+function hugeAvif(bytes, size) {
+  const copy = Buffer.from(bytes);
+  const at = copy.indexOf('ispe', 0, 'latin1');
+  copy.writeUInt32BE(size, at + 8);
+  copy.writeUInt32BE(size, at + 12);
+  return copy;
+}
+
+const madeImage = async (page, { type, half = false, width = 60, height = 40 }) =>
+  Buffer.from(
+    await page.evaluate(
+      async ({ type, half, width, height }) => {
+        const ctx = new OffscreenCanvas(width, height).getContext('2d');
+        ctx.fillStyle = '#336699';
+        ctx.fillRect(0, 0, half ? width / 2 : width, height);
+        const bytes = new Uint8Array(await (await ctx.canvas.convertToBlob({ type })).arrayBuffer());
+        return btoa(String.fromCharCode(...bytes));
+      },
+      { type, half, width, height },
+    ),
+    'base64',
+  );
+
+function imageServer(routes) {
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://x');
+    const route = routes[`${url.pathname}${url.search}`] ?? routes[url.pathname];
+    if (!route) return res.writeHead(404).end();
+    if (typeof route === 'function') return route(req, res);
+    res.writeHead(route.status ?? 200, { 'content-type': route.type }).end(route.body);
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
+}
+
+// Dans le service worker : réponse simulée à la demande d'accès (Playwright ne sait pas répondre à la vraie), et relevé de chaque téléchargement
+// avec ses octets, lus avant que le document hors écran ne se ferme.
+const armWorker = (sw, granted) =>
+  sw.evaluate((granted) => {
+    self.askedAccess = [];
+    Object.defineProperty(chrome.permissions, 'request', {
+      configurable: true,
+      value: async (args) => {
+        self.askedAccess.push(args);
+        return granted;
+      },
+    });
+    self.savedImages = [];
+    self.realDownload ??= chrome.downloads.download.bind(chrome.downloads);
+    Object.defineProperty(chrome.downloads, 'download', {
+      configurable: true,
+      value: async (options) => {
+        const bytes = new Uint8Array(await (await fetch(options.url)).arrayBuffer());
+        let text = '';
+        for (let i = 0; i < bytes.length; i += 32768) text += String.fromCharCode(...bytes.subarray(i, i + 32768));
+        self.savedImages.push({ filename: options.filename, conflictAction: options.conflictAction, saveAs: options.saveAs, base64: btoa(text) });
+        return self.realDownload(options);
+      },
+    });
+  }, granted);
+
+const lastSaved = async (sw) => {
+  const saved = await sw.evaluate(() => self.savedImages);
+  return saved.map((entry) => ({ ...entry, bytes: Buffer.from(entry.base64, 'base64') }));
+};
+
+const clickImage = (sw, request) => sw.evaluate((request) => self.saveWebImage(request), request);
+
+// Ce que voit l'utilisateur après un refus : l'icône, puis la phrase dans la fenêtre de l'icône.
+async function afterRefusal(context, sw, tabId) {
+  const state = await sw.evaluate(
+    async (tabId) => ({
+      badge: await chrome.action.getBadgeText({ tabId }),
+      lastError: (await chrome.storage.session.get('lastError')).lastError ?? null,
+    }),
+    tabId,
+  );
+  const popup = await extensionPage(context, 'popup/popup.html');
+  await popup.waitForFunction(() => document.getElementById('version').textContent !== '');
+  await pause(150);
+  const shown = await popup.evaluate(() => {
+    const el = document.getElementById('error');
+    return el.hidden ? '' : el.textContent;
+  });
+  await popup.close();
+  return { ...state, shown };
+}
+
+async function groupWebImage() {
+  console.log('\n— Clic droit sur une image');
+  const extension = await prepareExtension(WORK);
+  await fs.writeFile(path.join(extension, 'test-worker-silent.js'), 'self.onmessage = () => {};');
+  await fs.writeFile(path.join(extension, 'test-worker-crash.js'), "throw new Error('panne simulée');");
+  await fs.writeFile(path.join(extension, 'test-worker-marker.js'), "self.onmessage = ({ data }) => self.postMessage({ id: data.id, error: 'TRAVAILLEUR APPELÉ' });");
+
+  const avif = await fs.readFile(path.join(FIXTURES, 'flat.avif'));
+  const context = await launch(extension, 'profile-web', WORK);
+  let first;
+  let second;
+  try {
+    const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+    const helper = await extensionPage(context, 'popup/popup.html');
+    const png = await madeImage(helper, { type: 'image/png', half: true });
+    const jpg = await madeImage(helper, { type: 'image/jpeg' });
+    const webp = await madeImage(helper, { type: 'image/webp' });
+    const routes = {
+      '/page.html': { type: 'text/html; charset=utf-8', body: '<!doctype html><title>Page</title><img src="photo.png">' },
+      '/photo.png': { type: 'image/png', body: png },
+      '/photo.jpg': { type: 'image/jpeg', body: jpg },
+      '/photo.webp': { type: 'image/webp', body: webp },
+      '/photo.avif': { type: 'image/avif', body: avif },
+      '/transparente.png': { type: 'image/png', body: png },
+      '/interdite.png': { status: 403, type: 'text/html', body: 'Forbidden' },
+      '/article.html': { type: 'text/html', body: '<html>pas une image</html>' },
+      '/enorme.png': { type: 'image/png', body: hugePng(30000, 30000) },
+      '/enorme.avif': { type: 'image/avif', body: hugeAvif(avif, 20000) },
+      '/illisible.png': { type: 'image/png', body: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]) },
+      '/logo-dynamique': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' },
+      '/image?id=3': { type: 'image/png', body: png },
+      '/a%3Ab%3F%22c%3E.png': { type: 'image/png', body: png },
+      '/lourde.png': (_req, res) => {
+        res.writeHead(200, { 'content-type': 'image/png', 'content-length': 101 * MB });
+        res.write(Buffer.alloc(MB));
+      },
+      '/lourde-sans-taille.png': async (_req, res) => {
+        res.writeHead(200, { 'content-type': 'image/png' });
+        const chunk = Buffer.alloc(MB);
+        for (let sent = 0; sent < 120 && !res.destroyed; sent++) {
+          if (!res.write(chunk)) await new Promise((resolve) => res.once('drain', resolve));
+        }
+        res.end();
+      },
+    };
+    first = await imageServer(routes);
+    second = await imageServer(routes);
+    const base = `http://127.0.0.1:${first.address().port}`;
+    const other = `http://127.0.0.1:${second.address().port}`;
+    const { page: tabPage, tabId } = await openTab(context, sw, `${base}/page.html`);
+    const request = (srcUrl, format = 'png', extra = {}) => ({ srcUrl, pageUrl: `${base}/page.html`, format, tabId, ...extra });
+
+    await armWorker(sw, true);
+    await test('clic droit : PNG garde la transparence', async () => {
+      const result = await clickImage(sw, request(`${other}/photo.png`));
+      const [saved] = await lastSaved(sw);
+      const { pixels } = await readPixels(helper, saved.bytes, [[10, 10], [50, 10]]);
+      const ok = result.ok && saved.bytes.subarray(1, 4).toString() === 'PNG' && pixels[0][3] === 255 && pixels[1][3] === 0;
+      return { ok, detail: `${JSON.stringify(result)}, pixels ${pixels.join(' | ')}` };
+    });
+    await test('clic droit : dossier Captures/Web', async () => {
+      const [saved] = await lastSaved(sw);
+      return { ok: saved.filename === 'Captures/Web/photo.png' && saved.saveAs === false, detail: saved.filename };
+    });
+    await armWorker(sw, true);
+    await test('clic droit : JPG sur fond blanc', async () => {
+      const result = await clickImage(sw, request(`${other}/transparente.png`, 'jpg'));
+      const [saved] = await lastSaved(sw);
+      const { pixels } = await readPixels(helper, saved.bytes, [[50, 10], [10, 10]]);
+      const ok = result.ok && result.filename === 'Captures/Web/transparente.jpg' && saved.bytes[0] === 0xff && saved.bytes[1] === 0xd8 && isNear(pixels[0], [255, 255, 255], 3) && isNear(pixels[1], [51, 102, 153], 12);
+      return { ok, detail: `${result.filename}, pixels ${pixels.join(' | ')}` };
+    });
+    await test('clic droit : JPG en qualité Haute 92 %', async () => {
+      const [saved] = await lastSaved(sw);
+      const viaWorker = await helper.evaluate(
+        async ({ url }) => {
+          const blob = await (await fetch(url)).blob();
+          const convert = (quality) =>
+            new Promise((resolve, reject) => {
+              const worker = new Worker(chrome.runtime.getURL('convert/convert-worker.js'), { type: 'module' });
+              worker.onerror = reject;
+              worker.onmessage = async ({ data }) => {
+                worker.terminate();
+                const bytes = new Uint8Array(await data.blob.arrayBuffer());
+                resolve(btoa(String.fromCharCode(...bytes)));
+              };
+              worker.postMessage({ id: 1, file: blob, options: { format: 'jpg', quality, resize: { mode: 'none' } } });
+            });
+          return { high: await convert('high'), medium: await convert('medium') };
+        },
+        { url: `${other}/transparente.png` },
+      );
+      const asHigh = saved.base64 === viaWorker.high;
+      return { ok: asHigh && viaWorker.high !== viaWorker.medium, detail: `identique à Haute : ${asHigh}` };
+    });
+    await armWorker(sw, true);
+    await test('clic droit : un WebP est converti', async () => {
+      const result = await clickImage(sw, request(`${other}/photo.webp`, 'png'));
+      const [saved] = await lastSaved(sw);
+      const { width, height } = await readPixels(helper, saved.bytes, []);
+      return { ok: result.ok && saved.filename === 'Captures/Web/photo.png' && saved.bytes.subarray(1, 4).toString() === 'PNG' && width === 60 && height === 40, detail: `${saved.filename}, ${width} × ${height}` };
+    });
+    await armWorker(sw, true);
+    await test('clic droit : un AVIF est converti', async () => {
+      const result = await clickImage(sw, request(`${other}/photo.avif`, 'jpg'));
+      const [saved] = await lastSaved(sw);
+      const { width, height } = await readPixels(helper, saved.bytes, []);
+      return { ok: result.ok && saved.filename === 'Captures/Web/photo.jpg' && saved.bytes[0] === 0xff && width === 1 && height === 1, detail: `${saved.filename}, ${width} × ${height}` };
+    });
+    await test('clic droit : une image en data: est enregistrée', async () => {
+      await armWorker(sw, true);
+      const result = await clickImage(sw, request(`data:image/png;base64,${png.toString('base64')}`, 'png'));
+      return { ok: result.ok && result.filename === 'Captures/Web/image.png', detail: JSON.stringify(result) };
+    });
+    await test('taille : readImageSize lit un PNG, un JPEG, un GIF, un WebP et un AVIF', async () => {
+      const files = { png, jpg, webp, avif, gif: await fs.readFile(path.join(FIXTURES, 'animated.gif')), exif: await fs.readFile(path.join(FIXTURES, 'oriented.jpg')) };
+      const sizes = await helper.evaluate(async (files) => {
+        const { readImageSize } = await import(chrome.runtime.getURL('web-image/image-size.js'));
+        const decode = (base64) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+        const out = {};
+        for (const [name, base64] of Object.entries(files)) {
+          const bytes = decode(base64);
+          const bitmap = await createImageBitmap(new Blob([bytes])).catch(() => null);
+          out[name] = { read: readImageSize(bytes), real: bitmap && [bitmap.width, bitmap.height] };
+        }
+        // WebP sans perte (VP8L, 300 × 200) et étendu (VP8X, 5000 × 4000), en-têtes écrits à la main ; puis un fichier quelconque.
+        const riff = (fourcc, body) => Uint8Array.from([...new TextEncoder().encode('RIFF'), 0, 0, 0, 0, ...new TextEncoder().encode('WEBP'), ...new TextEncoder().encode(fourcc), 0, 0, 0, 0, ...body]);
+        const bits = (299 & 0x3fff) | ((199 & 0x3fff) << 14);
+        out.vp8l = { read: readImageSize(riff('VP8L', [0x2f, bits & 255, (bits >> 8) & 255, (bits >> 16) & 255, (bits >>> 24) & 255])), real: [300, 200] };
+        out.vp8x = { read: readImageSize(riff('VP8X', [0, 0, 0, 0, 0x87, 0x13, 0, 0x9f, 0x0f, 0])), real: [5000, 4000] };
+        out.junk = { read: readImageSize(new TextEncoder().encode('<html>pas une image</html>')), real: null };
+        return out;
+      }, Object.fromEntries(Object.entries(files).map(([name, bytes]) => [name, bytes.toString('base64')])));
+      const wrong = Object.entries(sizes).filter(([name, { read, real }]) => {
+        if (name === 'junk') return read !== null;
+        if (!read || !real) return true;
+        // Ce petit AVIF porte une consigne de recadrage : 2 × 2 px encodés, 1 × 1 px affiché. La limite de mémoire compte ce qui est encodé.
+        if (name === 'avif') return read.width !== 2 || read.height !== 2;
+        // L'orientation d'une photo échange ses côtés à l'affichage : le nombre de pixels reste le même.
+        return read.width * read.height !== real[0] * real[1];
+      });
+      return { ok: wrong.length === 0, detail: wrong.map(([name, v]) => `${name} ${JSON.stringify(v)}`).join() || Object.entries(sizes).map(([name, { read }]) => `${name} ${read ? `${read.width}×${read.height}` : 'null'}`).join(', ') };
+    });
+
+    await test('clic droit : l’accès demandé vaut exactement http://*/* et https://*/*', async () => {
+      await armWorker(sw, true);
+      await clickImage(sw, request(`${base}/photo.png`));
+      const [asked] = await sw.evaluate(() => self.askedAccess);
+      const ok = JSON.stringify(asked) === JSON.stringify({ origins: ['http://*/*', 'https://*/*'] });
+      return { ok, detail: JSON.stringify(asked) };
+    });
+    await test('clic droit : accès accordé, images de deux autres origines enregistrées', async () => {
+      await armWorker(sw, true);
+      const one = await clickImage(sw, request(`${base}/photo.jpg`, 'jpg'));
+      const two = await clickImage(sw, request(`${other}/photo.jpg`, 'jpg'));
+      const saved = await lastSaved(sw);
+      return { ok: one.ok && two.ok && saved.length === 2, detail: `${saved.length} fichiers` };
+    });
+    await test('clic droit : l’accès accordé est retenu au deuxième essai', async () => {
+      await armWorker(sw, true);
+      const asked = await sw.evaluate(async (request) => {
+        // Chrome répond tout de suite, sans demande : le code doit quand même repasser par `request`, sans attente avant.
+        const started = [];
+        const real = chrome.permissions.request;
+        Object.defineProperty(chrome.permissions, 'request', { configurable: true, value: (args) => (started.push(args), real(args)) });
+        const pending = self.saveWebImage(request);
+        // Sans `await` avant la demande, elle est déjà partie quand l'appel rend la main.
+        const synchronous = started.length === 1;
+        const first = await pending;
+        const second = await self.saveWebImage(request);
+        return { synchronous, first: first.ok, second: second.ok, calls: started.length };
+      }, request(`${base}/photo.jpg`, 'jpg'));
+      return { ok: asked.synchronous && asked.first && asked.second && asked.calls === 2, detail: JSON.stringify(asked) };
+    });
+    await test('clic droit : menus Enregistrer en PNG et Enregistrer en JPG', async () => {
+      const menus = await sw.evaluate(async () => {
+        const present = {};
+        for (const id of ['save-image-png', 'save-image-jpg']) present[id] = await chrome.contextMenus.update(id, {}).then(() => true, () => false);
+        return { present, declared: self.webImageMenus };
+      });
+      const titles = menus.declared?.map((menu) => `${menu.id}=${menu.title}`).join();
+      const contexts = menus.declared?.every((menu) => menu.contexts.join() === 'image');
+      return { ok: menus.present['save-image-png'] && menus.present['save-image-jpg'] && titles === 'save-image-png=Enregistrer en PNG,save-image-jpg=Enregistrer en JPG' && contexts, detail: titles };
+    });
+    await test('succès : pastille OK pendant 3 s', async () => {
+      await armWorker(sw, true);
+      await clickImage(sw, request(`${base}/photo.png`));
+      const now = await sw.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tabId);
+      await pause(1500);
+      const during = await sw.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tabId);
+      await pause(2200);
+      const later = await sw.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tabId);
+      return { ok: now === 'OK' && during === 'OK' && later === '', detail: `« ${now} », « ${during} », « ${later} »` };
+    });
+    await test('succès : le document hors écran est refermé', async () => {
+      const left = await sw.evaluate(async () => (await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] })).length);
+      return { ok: left === 0, detail: `${left} document` };
+    });
+    await test('fenêtre de l’icône : phrase sur l’image animée devenue fixe', async () => {
+      const popup = await extensionPage(context, 'popup/popup.html');
+      const words = await popup.locator('body').textContent();
+      await popup.close();
+      return { ok: /image animée devient fixe/.test(words), detail: words.match(/[^.]*image animée[^.]*\./)?.[0]?.trim() ?? 'absente' };
+    });
+
+    // Un cas par raison : rien de téléchargé, pastille « ! », phrase en français dans la fenêtre de l'icône.
+    const refused = (name, srcUrl, pattern, options = {}) =>
+      test(name, async () => {
+        await armWorker(sw, true);
+        await sw.evaluate((testing) => {
+          self.webImageTesting = testing;
+        }, options.testing ?? {});
+        const result = await clickImage(sw, request(srcUrl, 'png', options.extra));
+        await sw.evaluate(() => {
+          self.webImageTesting = {};
+        });
+        const saved = await lastSaved(sw);
+        const seen = await afterRefusal(context, sw, tabId);
+        const ok = result.ok === false && saved.length === 0 && pattern.test(result.reason) && seen.badge === '!' && seen.lastError?.message.includes(result.reason) && seen.shown.includes(result.reason);
+        return { ok, detail: `${result.reason} [pastille ${seen.badge}, ${saved.length} fichier, fenêtre : ${seen.shown ? 'oui' : 'non'}]` };
+      });
+    await refused('refus : 403', `${other}/interdite.png`, /403/);
+    await refused('refus : pas une image', `${other}/article.html`, /ne mène pas à une image/);
+    await refused('refus : plus de 100 Mo', `${other}/lourde.png`, /100 Mo/);
+    await refused('refus : plus de 100 Mo, sans taille annoncée', `${other}/lourde-sans-taille.png`, /100 Mo/);
+    await refused('refus : plus de 100 Mpx sans décodage', `${other}/enorme.png`, /100 mégapixels/, { testing: { workerUrl: 'test-worker-marker.js' } });
+    await refused('refus : un AVIF de plus de 100 Mpx sans décodage', `${other}/enorme.avif`, /100 mégapixels/, { testing: { workerUrl: 'test-worker-marker.js' } });
+    await refused('refus : dimensions illisibles', `${other}/illisible.png`, /format/i, { testing: { workerUrl: 'test-worker-marker.js' } });
+    await refused('refus : travailleur qui ne répond pas, délai maximal et message', `${other}/photo.png`, /trop de temps/, { testing: { workerUrl: 'test-worker-silent.js', timeoutMs: 1200 } });
+    await refused('travailleur qui lâche : message visible', `${other}/photo.png`, /mémoire/, { testing: { workerUrl: 'test-worker-crash.js' } });
+    await refused('refus : blob, SVG, page interdite', 'blob:http://exemple.fr/abc', /blob/);
+    await refused('refus : SVG par son adresse', 'https://exemple.fr/logo.svg', /SVG/);
+    await refused('refus : SVG par sa réponse', `${other}/logo-dynamique`, /SVG/);
+    await refused('refus : SVG en data:', 'data:image/svg+xml;base64,PHN2Zy8+', /SVG/);
+    await refused('refus : page interdite, chrome://', `${other}/photo.png`, /interdit/, { extra: { pageUrl: 'chrome://settings/' } });
+    await refused('refus : page interdite, Chrome Web Store', `${other}/photo.png`, /interdit/, { extra: { pageUrl: 'https://chromewebstore.google.com/detail/x' } });
+    await refused('refus : schéma non admis', 'ftp://exemple.fr/a.png', /adresse/);
+    await refused('refus : chrome-extension', 'chrome-extension://abc/a.png', /adresse/);
+
+    await armWorker(sw, true);
+    await test('nom : adresse sans nom de fichier', async () => {
+      const result = await clickImage(sw, request(`${other}/image?id=3`));
+      const names = await helper.evaluate(async () => {
+        const { webImageName } = await import(chrome.runtime.getURL('web-image/save-web-image.js'));
+        return [webImageName('https://exemple.fr/', 'jpg'), webImageName('https://exemple.fr/image?id=3', 'png'), webImageName('data:image/png;base64,AAAA', 'jpg')];
+      });
+      return { ok: result.filename === 'Captures/Web/image.png' && names.join() === 'image.jpg,image.png,image.jpg', detail: `${result.filename}, ${names.join()}` };
+    });
+    await test('nom : caractères interdits', async () => {
+      const result = await clickImage(sw, request(`${other}/a%3Ab%3F%22c%3E.png`));
+      const names = await helper.evaluate(async () => {
+        const { webImageName } = await import(chrome.runtime.getURL('web-image/save-web-image.js'));
+        return [webImageName('https://exemple.fr/photos/été%202026.large.webp', 'jpg'), webImageName('https://exemple.fr/..%2F..%2Fsecret.png', 'png'), webImageName('https://exemple.fr/%E0%A4%A', 'png'), webImageName('https://exemple.fr/con.png', 'png')];
+      });
+      const ok = result.filename === 'Captures/Web/a-b--c-.png' && names[0] === 'été 2026.large.jpg' && !names[1].includes('/') && names[3] === 'image-con.png' && names.every((name) => !/[\\/:*?"<>|~]/.test(name));
+      return { ok, detail: `${result.filename}, ${names.join(' | ')}` };
+    });
+    await test('nom : numéro si le nom est pris', async () => {
+      await armWorker(sw, true);
+      await clickImage(sw, request(`${base}/photo.png`));
+      await clickImage(sw, request(`${base}/photo.png`));
+      const saved = await lastSaved(sw);
+      return { ok: saved.length === 2 && saved.every((entry) => entry.conflictAction === 'uniquify'), detail: saved.map((entry) => entry.conflictAction).join() };
+    });
+    await test('service worker relancé pendant la demande : l’enregistrement reprend à l’accord', async () => {
+      await armWorker(sw, true);
+      const result = await sw.evaluate(async (request) => {
+        await chrome.storage.session.set({ pendingWebImage: { ...request, at: Date.now() } });
+        const answer = await self.resumeWebImage();
+        return { answer, pending: (await chrome.storage.session.get('pendingWebImage')).pendingWebImage ?? null };
+      }, request(`${base}/photo.png`));
+      const saved = await lastSaved(sw);
+      return { ok: result.answer?.ok && !result.pending && saved.length === 1, detail: JSON.stringify(result) };
+    });
+    await tabPage.close();
+    await helper.close();
+  } finally {
+    await context.close();
+    first?.close();
+    second?.close();
+  }
+
+  // Sans accès aux sites : la copie sans `<all_urls>`, puis la vraie extension.
+  for (const [label, dir, profile] of [['copie allHosts: false', await prepareExtension(WORK, { allHosts: false }), 'profile-sans-hotes'], ['vraie extension', EXTENSION, 'profile-vraie']]) {
+    const bare = await launch(dir, profile, WORK);
+    const server = await imageServer({ '/page.html': { type: 'text/html', body: '<title>Page</title>' }, '/photo.png': { type: 'image/png', body: await fs.readFile(path.join(FIXTURES, 'p3.png')) } });
+    try {
+      const sw = bare.serviceWorkers()[0] ?? (await bare.waitForEvent('serviceworker'));
+      const base = `http://127.0.0.1:${server.address().port}`;
+      const { tabId } = await openTab(bare, sw, `${base}/page.html`);
+      const request = { srcUrl: `${base}/photo.png`, pageUrl: `${base}/page.html`, format: 'jpg', tabId };
+      const name = label === 'vraie extension' ? 'vraie extension' : 'clic droit';
+      await test(`${name} : refus sur la copie allHosts: false, rien n’est téléchargé et le message s’affiche`.replace('sur la copie allHosts: false', label === 'vraie extension' ? 'de l’accès' : 'sur la copie allHosts: false'), async () => {
+        await armWorker(sw, false);
+        const result = await clickImage(sw, request);
+        const saved = await lastSaved(sw);
+        const seen = await afterRefusal(bare, sw, tabId);
+        const ok = result.ok === false && saved.length === 0 && /autorisé/.test(result.reason) && seen.badge === '!' && seen.shown.includes(result.reason);
+        return { ok, detail: `${result.reason} [pastille ${seen.badge}, fenêtre : ${seen.shown ? 'oui' : 'non'}]` };
+      });
+      await test(`${name} : la permission manque vraiment, la lecture échoue sans fichier`, async () => {
+        await armWorker(sw, true);
+        const result = await clickImage(sw, request);
+        const saved = await lastSaved(sw);
+        return { ok: result.ok === false && saved.length === 0 && /lire/.test(result.reason), detail: result.reason };
+      });
+      await test(`${name} : demande refusée puis service worker relancé, la fenêtre le dit`, async () => {
+        await sw.evaluate(
+          (request) => chrome.storage.session.set({ pendingWebImage: { ...request, at: Date.now() } }),
+          request,
+        );
+        const seen = await afterRefusal(bare, sw, tabId);
+        const left = await sw.evaluate(async () => (await chrome.storage.session.get('pendingWebImage')).pendingWebImage ?? null);
+        return { ok: /autorisé/.test(seen.shown) && !left, detail: seen.shown };
+      });
+    } finally {
+      await bare.close();
+      server.close();
+    }
+  }
+}
+
 async function main() {
   await fs.rm(WORK, { recursive: true, force: true });
   await fs.mkdir(WORK, { recursive: true });
@@ -950,6 +1379,7 @@ async function main() {
   } finally {
     await context.close();
   }
+  if (!ONLY || ONLY === 'webimage') await groupWebImage();
   const failed = results.filter((result) => !result.ok).length;
   console.log(`\n${results.length - failed}/${results.length} vérifications réussies`);
   process.exit(failed ? 1 : 0);

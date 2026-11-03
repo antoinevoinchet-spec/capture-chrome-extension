@@ -1,3 +1,5 @@
+import { NOT_ALLOWED, PENDING_KEY, refusalMessage } from '../web-image/save-web-image.js';
+
 const els = {
   full: document.getElementById('full'),
   visible: document.getElementById('visible'),
@@ -68,6 +70,15 @@ const { lastError } = await chrome.storage.session.get('lastError');
 if (lastError && Date.now() - lastError.at < 5 * 60_000) {
   showError(lastError.message);
   chrome.storage.session.remove('lastError');
+  // La raison est lue : la pastille « ! » de cet onglet n'a plus rien à signaler.
+  chrome.action.setBadgeText({ tabId: tab.id, text: '' }).catch(() => {});
+}
+
+// Une demande d'accès restée sans suite : le service worker s'est endormi pendant le refus et n'a rien pu dire.
+const { [PENDING_KEY]: pendingImage } = await chrome.storage.session.get(PENDING_KEY);
+if (pendingImage) {
+  chrome.storage.session.remove(PENDING_KEY);
+  if (Date.now() - pendingImage.at < 5 * 60_000) showError(refusalMessage(NOT_ALLOWED));
 }
 
 async function start(mode) {

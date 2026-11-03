@@ -1,6 +1,7 @@
 // Page du convertisseur : la liste des images, les réglages et les téléchargements.
 // Le travail se fait à part (convert-worker.js), une image à la fois. Rien n'est gardé après la fermeture de l'onglet.
 
+import { cleanBase } from '../lib/file-name.js';
 import { FORMATS } from '../lib/settings.js';
 import { isWritingField, namePasted, pastedFiles } from './paste.js';
 import { buildPdf } from './pdf.js';
@@ -27,8 +28,6 @@ const RESIZES = {
 };
 // Délai pendant lequel « Annuler », arrivé sous la souris, ignore le second clic d'un double clic sur « Convertir ».
 const CANCEL_GRACE_MS = 500;
-// Chrome refuse ces noms hérités de Windows, quel que soit le système, quelle que soit la suite du nom.
-const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9]|clock\$)(\.|$)/i;
 const SAVE_PROBLEMS = {
   FILE_NO_SPACE: 'disque plein',
   FILE_ACCESS_DENIED: 'accès refusé',
@@ -461,20 +460,6 @@ function refreshPdf() {
 }
 
 // --- Les téléchargements ---
-
-// Chrome refuse certains noms : caractères réservés, espaces spéciaux (ceux des captures d'écran de macOS), points en tête ou en fin,
-// noms hérités de Windows. La coupe se fait entre deux caractères entiers : couper un émoji en deux rend le nom invalide.
-function cleanBase(name) {
-  const base = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name;
-  const safe = base
-    .normalize('NFC')
-    .replace(/\p{Zs}/gu, ' ')
-    .replace(/[\p{Cc}\p{Cf}]/gu, '')
-    .replace(/[\\/:*?"<>|~]/g, '-');
-  const clean = Array.from(safe).slice(0, 120).join('').replace(/^[.\s]+|[.\s]+$/g, '');
-  if (!clean) return 'image';
-  return RESERVED_NAMES.test(clean) ? `image-${clean}` : clean;
-}
 
 const outputName = (item) => `${FOLDER}/${cleanBase(item.file.name)}.${OUTPUTS[state.format].ext}`;
 
