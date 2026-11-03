@@ -35,14 +35,42 @@ function blockRows(scores, from, avoid) {
 
 const hex = (channels) => `#${channels.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
 
+// Le cadre utilisé, en pixels entiers de la capture : le cadrage ramené dans ses bords, ou la capture entière (sans cadrage, ou cadrage illisible).
+function frameOf({ width, height }, trim) {
+  const whole = { x: 0, y: 0, w: width, h: height };
+  if (!trim || ![trim.x, trim.y, trim.w, trim.h].every(Number.isFinite)) return whole;
+  const x = Math.max(0, Math.round(trim.x));
+  const y = Math.max(0, Math.round(trim.y));
+  const w = Math.min(Math.round(trim.w), width - x);
+  const h = Math.min(Math.round(trim.h), height - y);
+  return w >= 1 && h >= 1 ? { x, y, w, h } : whole;
+}
+
 export class Stitcher {
-  // overlay(ctx, top, height, ratio) dessine la surimpression (les annotations) après la capture ;
-  // ctx est positionné en (0, 0) = point `top` de la capture, à l'échelle `ratio`.
-  constructor(record, { overlay } = {}) {
+  // overlay(ctx, top, height, ratio, left) dessine la surimpression (les annotations) après la capture ;
+  // ctx est positionné en (0, 0) = point (`left`, `top`) de la capture, à l'échelle `ratio`.
+  // `trim` { x, y, w, h } : le cadrage. Les parties restent en coordonnées de la capture, comprises dans le cadre ; `draw` et `averageRing`
+  // lisent toujours la capture entière (l'éditeur montre l'extérieur, et la teinte d'un masque ne dépend pas du cadrage).
+  constructor(record, { overlay, trim = null } = {}) {
     this.record = record;
     this.overlay = overlay;
+    this.trim = trim;
     this.cache = new Map();
     this.queue = Promise.resolve();
+  }
+
+  setTrim(trim) {
+    this.trim = trim ?? null;
+  }
+
+  frame() {
+    return frameOf(this.record, this.trim);
+  }
+
+  // Taille de l'image qui sort d'ici, cadrage compris.
+  outputSize() {
+    const { w, h } = this.frame();
+    return { width: w, height: h };
   }
 
   // Une seule opération à la fois : évite de fermer une tranche encore en cours de dessin.
@@ -84,11 +112,12 @@ export class Stitcher {
   // Cherche, entre from et to, la ligne la plus « vide » (sans texte ni contour) pour y couper,
   // en évitant les zones `avoid` tant qu'il reste des lignes libres.
   async findCut(from, to, avoid = []) {
-    const width = this.record.width;
+    const { x, w: width } = this.frame();
     const height = to - from;
     if (height <= 1) return to;
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.translate(-x, 0);
     await this.draw(ctx, from, height);
     const { data } = ctx.getImageData(0, 0, width, height);
 
@@ -132,7 +161,7 @@ export class Stitcher {
   // et, quand c'est possible, hors des zones `avoid`.
   planParts(maxHeight, avoid = []) {
     return this.enqueue(async () => {
-      const { height } = this.record;
+      const { y: origin, h: height } = this.frame();
       const limit = Math.max(200, Math.min(Math.round(maxHeight), MAX_PART_PX));
       const count = Math.ceil(height / limit);
       const ideal = height / count;
@@ -142,26 +171,35 @@ export class Stitcher {
         const upper = Math.min(Math.round(k * ideal + SEARCH_BELOW * ideal), top + limit);
         let lower = Math.max(Math.round(k * ideal - SEARCH_ABOVE * ideal), height - (count - k) * limit, top + 1);
         if (lower >= upper) lower = upper - 1;
-        const cut = await this.findCut(lower, upper, avoid);
-        parts.push({ top, height: cut - top });
+        const cut = (await this.findCut(origin + lower, origin + upper, avoid)) - origin;
+        parts.push({ top: origin + top, height: cut - top });
         top = cut;
       }
-      parts.push({ top, height: height - top });
+      parts.push({ top: origin + top, height: height - top });
       return parts;
     });
   }
 
   renderPart(part, type = 'image/png', quality = 0.92) {
     return this.enqueue(async () => {
-      const canvas = new OffscreenCanvas(this.record.width, part.height);
+      const frame = this.frame();
+      // Filet : une partie calculée avant un changement de cadrage ne sort jamais du cadre.
+      const top = Math.max(part.top, frame.y);
+      const height = Math.min(part.top + part.height, frame.y + frame.h) - top;
+      if (height < 1) throw new Error('cette image est hors du cadre');
+      // Canvas neuf, à la taille du cadre : ce qui est hors cadre n'y entre pas.
+      const canvas = new OffscreenCanvas(frame.w, height);
       try {
         const ctx = canvas.getContext('2d');
         if (type !== 'image/png') {
           ctx.fillStyle = '#fff';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
-        await this.draw(ctx, part.top, part.height);
-        await this.overlay?.(ctx, part.top, part.height, 1);
+        ctx.save();
+        ctx.translate(-frame.x, 0);
+        await this.draw(ctx, top, height);
+        ctx.restore();
+        await this.overlay?.(ctx, top, height, 1, frame.x);
         const blob = await canvas.convertToBlob({ type, quality });
         if (blob.type !== type) throw new Error(`Chrome ne sait pas produire ce format (${type}).`);
         return blob;
@@ -173,18 +211,31 @@ export class Stitcher {
   }
 
   // Aperçu réduit pour l'affichage ; le canvas doit déjà avoir sa largeur en pixels.
-  // `{ overlay: false }` dessine la capture seule.
+  // `{ overlay: false }` dessine la capture seule ; `{ full: true }` ignore le cadrage (les tuiles de l'éditeur montrent l'extérieur).
   // Dessiné hors écran puis copié d'un seul coup : l'écran peut se rafraîchir entre deux tranches, et il montrerait alors, le temps
   // du dessin, ce que les masques vont cacher.
-  renderPreview(part, canvas, { overlay = true } = {}) {
+  renderPreview(part, canvas, { overlay = true, full = false } = {}) {
     return this.enqueue(async () => {
-      const ratio = canvas.width / this.record.width;
+      const frame = full ? frameOf(this.record, null) : this.frame();
+      const ratio = canvas.width / frame.w;
       const buffer = new OffscreenCanvas(canvas.width, Math.max(1, Math.round(part.height * ratio)));
       const ctx = buffer.getContext('2d');
       ctx.imageSmoothingQuality = 'high';
-      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      await this.draw(ctx, part.top, part.height);
-      if (overlay) await this.overlay?.(ctx, part.top, part.height, ratio);
+      if (frame.w === this.record.width && frame.h === this.record.height) {
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        await this.draw(ctx, part.top, part.height);
+      } else {
+        // Réduite directement, la capture mêlerait au bord du cadre un peu de ce qui est à l'extérieur : le cadre passe d'abord par un canvas
+        // en pleine définition, où l'extérieur n'existe pas.
+        const exact = new OffscreenCanvas(frame.w, part.height);
+        const exactCtx = exact.getContext('2d');
+        exactCtx.translate(-frame.x, 0);
+        await this.draw(exactCtx, part.top, part.height);
+        ctx.drawImage(exact, 0, 0, buffer.width, buffer.height);
+        exact.width = exact.height = 0;
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      }
+      if (overlay) await this.overlay?.(ctx, part.top, part.height, ratio, frame.x);
       canvas.height = buffer.height;
       canvas.getContext('2d').drawImage(buffer, 0, 0);
     });

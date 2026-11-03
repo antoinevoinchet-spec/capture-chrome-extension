@@ -13,9 +13,9 @@ const PREVIEW_MARGIN_PX = 16;
 const AVOID_MARGIN_POINTS = 8;
 
 // Dessine sur ctx les masques, puis les autres annotations dans l'ordre de création.
-// ctx est déjà positionné en (0, 0) = point `top` de la capture, à l'échelle `ratio` ; seule la part
-// [top, top + height) est dessinée.
-export function drawAnnotations(ctx, items, scale, top, height, ratio = 1) {
+// ctx est déjà positionné en (0, 0) = point (`left`, `top`) de la capture, à l'échelle `ratio` ; seule la part
+// [top, top + height) est dessinée. Avec un cadrage, ce qui dépasse du canvas est coupé à son bord, et une annotation hors cadre n'y touche rien.
+export function drawAnnotations(ctx, items, scale, top, height, ratio = 1, left = 0) {
   const bottom = top + height;
   const width = Math.round(ctx.canvas.width / ratio);
   const numbers = badgeNumbers(items);
@@ -36,18 +36,18 @@ export function drawAnnotations(ctx, items, scale, top, height, ratio = 1) {
   for (let bandTop = from; bandTop < to; bandTop += bandPx) {
     const bandHeight = Math.min(bandPx, to - bandTop);
     const inBand = shown.filter(({ box }) => overlaps(box, bandTop, bandTop + bandHeight)).map(({ item }) => item);
-    if (inBand.length) drawBand(ctx, inBand, numbers, scale, { width, top, bandTop, bandHeight });
+    if (inBand.length) drawBand(ctx, inBand, numbers, scale, { width, left, top, bandTop, bandHeight });
   }
 }
 
-// Une bande : les nœuds sont posés sur un groupe décalé de -bandTop, puis exportés depuis (0, 0) à l'échelle 1.
+// Une bande : les nœuds sont posés sur un groupe décalé de (-left, -bandTop), puis exportés depuis (0, 0) à l'échelle 1.
 // Exporter avec un `y` élevé ferait allouer à Konva un tampon de hauteur `y + height`. Exporter à l'échelle d'un aperçu
 // peindrait les blocs d'un masque sur des pixels fractionnaires : leurs bords deviendraient translucides et laisseraient
 // voir la capture. À l'échelle 1 les bords tombent sur des pixels entiers ; c'est `drawImage` qui réduit ensuite la bande.
-function drawBand(ctx, items, numbers, scale, { width, top, bandTop, bandHeight }) {
+function drawBand(ctx, items, numbers, scale, { width, left, top, bandTop, bandHeight }) {
   const masks = new Konva.Group();
   const shapes = new Konva.Group();
-  const scene = new Konva.Group({ y: -bandTop });
+  const scene = new Konva.Group({ x: -left, y: -bandTop });
   scene.add(masks, shapes);
   try {
     for (const item of items) (item.type === 'mask' ? masks : shapes).add(createNode(item, scale, numbers.get(item.id)));

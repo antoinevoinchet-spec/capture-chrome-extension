@@ -15,7 +15,7 @@ async function eachPart(parts, render, { signal, onProgress }) {
 }
 
 export async function exportPdf({ stitcher, parts, signal, onProgress }) {
-  const { width } = stitcher.record;
+  const { width } = stitcher.outputSize();
   const pages = [];
   await eachPart(
     parts,
