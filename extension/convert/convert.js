@@ -602,9 +602,10 @@ window.addEventListener('drop', (event) => {
   addFiles(event.dataTransfer.files);
 });
 document.addEventListener('paste', (event) => {
-  if (isWritingField(event.target)) return;
-  event.preventDefault();
   const { files, finderCopy } = pastedFiles(event.clipboardData);
+  // Un champ garde son collage normal, mais une image seule n'a rien à y faire : elle rejoint la liste plutôt que de disparaître sans un mot.
+  if (isWritingField(event.target) && (!files.length || event.clipboardData.getData('text/plain'))) return;
+  event.preventDefault();
   if (!files.length || finderCopy) {
     toast('Pas d’image dans le presse-papiers. Pour un fichier du Finder, glisse-le ici.');
     return;

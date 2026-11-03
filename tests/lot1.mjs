@@ -194,6 +194,14 @@ async function groupPaste(context) {
       const names = await itemNames(page);
       return { ok: !prevented && names.length === 0 && !(await toastText(page)), detail: `empêché : ${prevented}, ${names.length} ligne` };
     }));
+  await test('collage : une image seule dans le champ Largeur s’ajoute à la liste', () =>
+    session(async (page) => {
+      await page.locator('#resize button', { hasText: /^Largeur$/ }).click();
+      await page.locator('#resize-value').focus();
+      await paste(page, { files: [{ name: 'image.png', type: 'image/png', base64: await tinyImage(page) }] });
+      const names = await itemNames(page);
+      return { ok: names.length === 1 && COLLAGE.test(names[0]), detail: names.join() };
+    }));
   await test('collage : texte seul, message', () =>
     session(async (page) => {
       await paste(page, { text: 'juste du texte' });
@@ -432,6 +440,46 @@ const readPixels = (page, bytes, points) =>
     { base64: bytes.toString('base64'), points },
   );
 
+// Les flux JPEG d'un PDF, dans l'ordre du fichier.
+function pdfStreams(bytes) {
+  const text = bytes.toString('latin1');
+  const streams = [];
+  for (const match of text.matchAll(/\/Filter \/DCTDecode \/Length (\d+) >>\nstream\n/g)) {
+    const start = match.index + match[0].length;
+    streams.push(bytes.subarray(start, start + Number(match[1])));
+  }
+  return streams;
+}
+
+// Compare chaque page d'un PDF au rendu de sa partie, encodé à 92 % : même contenu, même ordre, rien en plus. Rend les numéros des pages qui diffèrent.
+async function pagesDifferingFromParts(page, id, file, items = []) {
+  const bytes = await fs.readFile(file);
+  const { pages } = await pdfInfo(file);
+  const heights = pages.map((box) => Math.round(box.height / 0.75));
+  const expected = await page.evaluate(
+    async ({ id, heights, items }) => {
+      const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+      const { getCapture } = await import(chrome.runtime.getURL('lib/db.js'));
+      const { drawAnnotations } = await import(chrome.runtime.getURL('annotate/render.js'));
+      const record = await getCapture(id);
+      const stitcher = new Stitcher(record, { overlay: (ctx, top, height, ratio) => drawAnnotations(ctx, items, record.scale, top, height, ratio) });
+      const hashes = [];
+      let top = 0;
+      for (const height of heights) {
+        const blob = await stitcher.renderPart({ top, height }, 'image/jpeg', 0.92);
+        hashes.push([...new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))].map((b) => b.toString(16).padStart(2, '0')).join(''));
+        top += height;
+      }
+      stitcher.dispose();
+      return hashes;
+    },
+    { id, heights, items },
+  );
+  const streams = pdfStreams(bytes);
+  const wrong = expected.map((hash, index) => (streams[index] && sha(streams[index]) === hash ? 0 : index + 1)).filter(Boolean);
+  return streams.length === expected.length ? wrong : [`${streams.length} flux pour ${expected.length} pages`];
+}
+
 const isNear = (pixel, rgb, tolerance = 28) => rgb.every((value, channel) => Math.abs(pixel[channel] - value) <= tolerance);
 
 function baseOf(filename) {
@@ -538,6 +586,11 @@ async function groupExport(context) {
       );
       const ok = sha(stream) === expected && pages.every((box) => Math.abs(box.width - 2560 * 0.75) < 0.01) && stream[0] === 0xff && stream[1] === 0xd8;
       return { ok, detail: `largeur ${pages[0].width} pt, flux ${stream.length} octets, identique à 92 % : ${sha(stream) === expected}` };
+    }));
+  await test('pdf : chaque page est le rendu de sa partie, dans l’ordre', () =>
+    session(tall, async (page) => {
+      const wrong = await pagesDifferingFromParts(page, tall, pdfFile);
+      return { ok: wrong.length === 0, detail: wrong.join() || `${partCount} pages identiques` };
     }));
   await test('pdf : nom Captures/<hôte_date>/<hôte_date>.pdf', async () => {
     const base = baseOf(pdfName);
@@ -683,10 +736,44 @@ async function groupExport(context) {
       });
       await chooseExport(page, 'pdf');
       await waitIdle(page);
-      await pause(500);
+      // Un long export se laisse tourner dans un autre onglet : au retour, le message doit encore être là.
+      await pause(7500);
       const message = await toastText(page);
       const saved = await savedNames(page);
       return { ok: saved.length === 0 && /partie 2/.test(message) && /aucun fichier/i.test(message) && !/panne simulée/.test(message), detail: message };
+    }));
+  await test('disque plein à l’écriture : pas de succès annoncé, message qui reste', () =>
+    session(single, async (page) => {
+      await spyDownloads(page);
+      await page.evaluate(() => {
+        chrome.downloads.search = async () => [{ state: 'interrupted', error: 'FILE_NO_SPACE' }];
+      });
+      await chooseExport(page, 'pdf');
+      await waitIdle(page);
+      await pause(7500);
+      const message = await toastText(page);
+      return { ok: /disque est plein/.test(message) && !/enregistré dans/.test(message), detail: message };
+    }));
+  await test('écriture lente : le succès attend la fin, Annuler est grisé pendant ce temps', () =>
+    session(single, async (page) => {
+      await spyDownloads(page);
+      await page.evaluate(() => {
+        window.writeDone = false;
+        chrome.downloads.search = async () => [{ state: window.writeDone ? 'complete' : 'in_progress' }];
+        const realAdd = chrome.downloads.onChanged.addListener.bind(chrome.downloads.onChanged);
+        chrome.downloads.onChanged.addListener = (listener) => {
+          window.writeListener = listener;
+          realAdd(listener);
+        };
+      });
+      await chooseExport(page, 'pdf');
+      await page.waitForFunction(() => window.saved.length === 1 && window.writeListener);
+      await pause(300);
+      const during = await page.evaluate(() => ({ text: document.getElementById('export-progress').textContent, cancel: document.getElementById('export-cancel').disabled, toast: document.getElementById('toast').hidden }));
+      await page.evaluate(() => window.writeListener({ id: 1, state: { current: 'complete' } }));
+      await waitIdle(page);
+      const message = await toastText(page);
+      return { ok: /Enregistrement/.test(during.text) && during.cancel && during.toast && /enregistré dans/.test(message), detail: `${during.text}, ${message}` };
     }));
   await test('export figé : changer de capture, de découpage ou ouvrir l’éditeur est impossible, puis relecture du PDF page par page', () =>
     session(tall, async (page) => {
@@ -722,10 +809,8 @@ async function groupExport(context) {
       const file = path.join(dir, 'frozen.pdf');
       await fs.writeFile(file, bytes);
       const { pages } = await pdfInfo(file);
-      // Le masque arrivé en plein export ne doit pas y figurer, ni une autre capture ni un autre découpage.
-      const firstHeight = Math.round(pages[0].height / 0.75);
-      const png = await pdfPagePng(file, 2, path.join(dir, 'frozen-p2'));
-      const { pixels } = await readPixels(page, png, [[MASK.x + 450, MASK.y + 150 - firstHeight]]);
+      // Le masque arrivé en plein export ne doit pas y figurer, ni une autre capture ni un autre découpage : chaque page est relue contre sa partie.
+      const wrong = await pagesDifferingFromParts(page, tall, file);
       const url = await page.evaluate(() => location.search);
       const after = await page.evaluate(() => {
         const disabled = (selector) => [...document.querySelectorAll(selector)].some((el) => el.disabled);
@@ -734,8 +819,8 @@ async function groupExport(context) {
       const ok =
         frozen.split && frozen.history && frozen.annotate && frozen.all && !editorOpen &&
         pages.length === partCount && url.includes(tall) && saved.endsWith('.pdf') &&
-        !isNear(pixels[0], [96, 96, 96], 60) && !after.split && !after.history;
-      return { ok, detail: `${JSON.stringify(frozen)}, éditeur ${editorOpen}, ${pages.length} pages, pixel ${pixels[0]}, ensuite ${JSON.stringify(after)}` };
+        wrong.length === 0 && !after.split && !after.history;
+      return { ok, detail: `${JSON.stringify(frozen)}, éditeur ${editorOpen}, ${pages.length} pages, différentes : ${wrong.join() || 'aucune'}, ensuite ${JSON.stringify(after)}` };
     }));
   await test('contrôle : un export mené à son terme compte bien un téléchargement', async () => {
     const sw = context.serviceWorkers()[0];
@@ -997,6 +1082,7 @@ const armWorker = (sw, granted) =>
       configurable: true,
       value: async (args) => {
         self.askedAccess.push(args);
+        if (granted === 'geste perdu') throw new Error('This function must be called during a user gesture');
         return granted;
       },
     });
@@ -1038,7 +1124,8 @@ async function afterRefusal(context, sw, tabId) {
     return el.hidden ? '' : el.textContent;
   });
   await popup.close();
-  return { ...state, shown };
+  const badgeAfter = await sw.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tabId);
+  return { ...state, shown, badgeAfter };
 }
 
 async function groupWebImage() {
@@ -1073,6 +1160,9 @@ async function groupWebImage() {
       '/logo-dynamique': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' },
       '/image?id=3': { type: 'image/png', body: png },
       '/a%3Ab%3F%22c%3E.png': { type: 'image/png', body: png },
+      '/lente.png': (_req, res) => {
+        setTimeout(() => res.writeHead(200, { 'content-type': 'image/png' }).end(png), 1500);
+      },
       '/lourde.png': (_req, res) => {
         res.writeHead(200, { 'content-type': 'image/png', 'content-length': 101 * MB });
         res.write(Buffer.alloc(MB));
@@ -1199,7 +1289,7 @@ async function groupWebImage() {
       const saved = await lastSaved(sw);
       return { ok: one.ok && two.ok && saved.length === 2, detail: `${saved.length} fichiers` };
     });
-    await test('clic droit : l’accès accordé est retenu au deuxième essai', async () => {
+    await test('clic droit : la demande part sans attente et un deuxième essai repasse par elle (réponse de Chrome simulée)', async () => {
       await armWorker(sw, true);
       const asked = await sw.evaluate(async (request) => {
         // Chrome répond tout de suite, sans demande : le code doit quand même repasser par `request`, sans attente avant.
@@ -1215,6 +1305,12 @@ async function groupWebImage() {
       }, request(`${base}/photo.jpg`, 'jpg'));
       return { ok: asked.synchronous && asked.first && asked.second && asked.calls === 2, detail: JSON.stringify(asked) };
     });
+    await test('clic droit : geste perdu au réveil, accès déjà accordé, l’image est enregistrée', async () => {
+      await armWorker(sw, 'geste perdu');
+      const result = await clickImage(sw, request(`${base}/photo.png`));
+      const saved = await lastSaved(sw);
+      return { ok: result.ok && saved.length === 1, detail: JSON.stringify(result) };
+    });
     await test('clic droit : menus Enregistrer en PNG et Enregistrer en JPG', async () => {
       const menus = await sw.evaluate(async () => {
         const present = {};
@@ -1224,6 +1320,16 @@ async function groupWebImage() {
       const titles = menus.declared?.map((menu) => `${menu.id}=${menu.title}`).join();
       const contexts = menus.declared?.every((menu) => menu.contexts.join() === 'image');
       return { ok: menus.present['save-image-png'] && menus.present['save-image-jpg'] && titles === 'save-image-png=Enregistrer en PNG,save-image-jpg=Enregistrer en JPG' && contexts, detail: titles };
+    });
+    await test('pendant la lecture : la pastille montre que ça travaille', async () => {
+      await armWorker(sw, true);
+      await sw.evaluate((request) => {
+        self.slowSave = self.saveWebImage(request);
+      }, request(`${base}/lente.png`));
+      await pause(700);
+      const during = await sw.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tabId);
+      const result = await sw.evaluate(() => self.slowSave);
+      return { ok: during === '…' && result.ok, detail: `« ${during} », ${JSON.stringify(result)}` };
     });
     await test('succès : pastille OK pendant 3 s', async () => {
       await armWorker(sw, true);
@@ -1259,8 +1365,8 @@ async function groupWebImage() {
         });
         const saved = await lastSaved(sw);
         const seen = await afterRefusal(context, sw, tabId);
-        const ok = result.ok === false && saved.length === 0 && pattern.test(result.reason) && seen.badge === '!' && seen.lastError?.message.includes(result.reason) && seen.shown.includes(result.reason);
-        return { ok, detail: `${result.reason} [pastille ${seen.badge}, ${saved.length} fichier, fenêtre : ${seen.shown ? 'oui' : 'non'}]` };
+        const ok = result.ok === false && saved.length === 0 && pattern.test(result.reason) && seen.badge === '!' && seen.lastError?.message.includes(result.reason) && seen.lastError?.tabId === tabId && seen.shown.includes(result.reason) && seen.badgeAfter === '';
+        return { ok, detail: `${result.reason} [pastille ${seen.badge} puis « ${seen.badgeAfter} », ${saved.length} fichier, fenêtre : ${seen.shown ? 'oui' : 'non'}]` };
       });
     await refused('refus : 403', `${other}/interdite.png`, /403/);
     await refused('refus : pas une image', `${other}/article.html`, /ne mène pas à une image/);
@@ -1280,6 +1386,15 @@ async function groupWebImage() {
     await refused('refus : schéma non admis', 'ftp://exemple.fr/a.png', /adresse/);
     await refused('refus : chrome-extension', 'chrome-extension://abc/a.png', /adresse/);
 
+    await test('refus lu trop tard : plus de 5 minutes, ni message ni pastille restante', async () => {
+      await sw.evaluate(async (tabId) => {
+        await chrome.action.setBadgeText({ tabId, text: '!' });
+        await chrome.storage.session.set({ lastError: { message: 'Image non enregistrée : ancienne', at: Date.now() - 6 * 60_000, tabId } });
+      }, tabId);
+      const seen = await afterRefusal(context, sw, tabId);
+      const left = await sw.evaluate(async () => (await chrome.storage.session.get('lastError')).lastError ?? null);
+      return { ok: seen.shown === '' && seen.badgeAfter === '' && !left, detail: `fenêtre « ${seen.shown} », pastille « ${seen.badgeAfter} »` };
+    });
     await armWorker(sw, true);
     await test('nom : adresse sans nom de fichier', async () => {
       const result = await clickImage(sw, request(`${other}/image?id=3`));
@@ -1305,7 +1420,7 @@ async function groupWebImage() {
       const saved = await lastSaved(sw);
       return { ok: saved.length === 2 && saved.every((entry) => entry.conflictAction === 'uniquify'), detail: saved.map((entry) => entry.conflictAction).join() };
     });
-    await test('service worker relancé pendant la demande : l’enregistrement reprend à l’accord', async () => {
+    await test('demande notée retrouvée à l’accord : l’enregistrement reprend (réveil du service worker simulé)', async () => {
       await armWorker(sw, true);
       const result = await sw.evaluate(async (request) => {
         await chrome.storage.session.set({ pendingWebImage: { ...request, at: Date.now() } });
@@ -1341,13 +1456,20 @@ async function groupWebImage() {
         const ok = result.ok === false && saved.length === 0 && /autorisé/.test(result.reason) && seen.badge === '!' && seen.shown.includes(result.reason);
         return { ok, detail: `${result.reason} [pastille ${seen.badge}, fenêtre : ${seen.shown ? 'oui' : 'non'}]` };
       });
+      await test(`${name} : geste perdu sans accès, le message dit de refaire le clic droit`, async () => {
+        await armWorker(sw, 'geste perdu');
+        const result = await clickImage(sw, request);
+        const saved = await lastSaved(sw);
+        const seen = await afterRefusal(bare, sw, tabId);
+        return { ok: result.ok === false && saved.length === 0 && /Refais le clic droit/.test(result.reason) && seen.shown.includes(result.reason), detail: result.reason };
+      });
       await test(`${name} : la permission manque vraiment, la lecture échoue sans fichier`, async () => {
         await armWorker(sw, true);
         const result = await clickImage(sw, request);
         const saved = await lastSaved(sw);
         return { ok: result.ok === false && saved.length === 0 && /lire/.test(result.reason), detail: result.reason };
       });
-      await test(`${name} : demande refusée puis service worker relancé, la fenêtre le dit`, async () => {
+      await test(`${name} : demande notée restée sans suite (réveil du service worker simulé), la fenêtre le dit`, async () => {
         await sw.evaluate(
           (request) => chrome.storage.session.set({ pendingWebImage: { ...request, at: Date.now() } }),
           request,

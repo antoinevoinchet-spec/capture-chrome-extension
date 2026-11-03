@@ -1,6 +1,7 @@
 import { openEditor } from '../annotate/editor.js';
 import { avoidRanges, drawAnnotations } from '../annotate/render.js';
 import { CaptureGone, deleteCapture, getAnnotations, getCapture, listAnnotatedIds, listCaptures, saveAnnotations } from '../lib/db.js';
+import { downloadEnd } from '../lib/download-end.js';
 import { FORMATS, SPLITS, loadSettings, saveSettings } from '../lib/settings.js';
 import { exportPdf, exportZip } from './export.js';
 import { Stitcher } from './stitcher.js';
@@ -547,6 +548,7 @@ function setExporting(control) {
   els.downloadAll.disabled = on;
   els.export.hidden = on;
   els.exportCancel.hidden = !on;
+  els.exportCancel.disabled = false;
   els.exportProgress.hidden = !on;
   els.exportProgress.textContent = '';
   setAnnotateEnabled();
@@ -570,6 +572,8 @@ async function startExport(kind) {
     reached = done;
     els.exportProgress.textContent = `Partie ${done} sur ${total}`;
   };
+  // Un refus d'un export précédent, resté à l'écran, ne concerne plus celui-ci.
+  els.toast.hidden = true;
   setExporting(control);
   els.exportCancel.focus();
   try {
@@ -578,7 +582,15 @@ async function startExport(kind) {
         ? await exportPdf({ stitcher: frozen.stitcher, parts: frozen.parts, signal: control.signal, onProgress })
         : await exportZip({ stitcher: frozen.stitcher, parts: frozen.parts, format: frozen.format.type, names, signal: control.signal, onProgress });
     if (control.signal.aborted) throw control.signal.reason;
+    // Le fichier s'écrit encore : plus rien à annuler ici, et le succès ne se dit qu'une fois écrit.
+    els.exportCancel.disabled = true;
+    els.exportProgress.textContent = 'Enregistrement du fichier…';
     const id = await saveBlob(blob, `${DOWNLOAD_FOLDER}/${frozen.base}/${frozen.base}.${kind}`);
+    const problem = await downloadEnd(id);
+    if (problem) {
+      toast(`${label} non enregistré : ${problem}`, { lasting: true });
+      return;
+    }
     toast(`${label} enregistré dans Téléchargements › ${DOWNLOAD_FOLDER} › ${frozen.base}.`, {
       success: true,
       action: { label: 'Afficher dans le Finder', run: () => chrome.downloads.show(id) },
@@ -587,10 +599,10 @@ async function startExport(kind) {
     if (control.signal.aborted) {
       toast('Export annulé : aucun fichier créé.');
     } else if (err instanceof ZipTooBig) {
-      toast('Ce zip dépasserait la limite de 4 Go ou 65 535 images : aucun fichier créé. Choisis le format JPG, ou exporte en PDF.');
+      toast('Ce zip dépasserait la limite de 4 Go ou 65 535 images : aucun fichier créé. Choisis le format JPG, ou exporte en PDF.', { lasting: true });
     } else {
       console.error(err);
-      toast(`L’export s’est arrêté à la partie ${reached} : aucun fichier créé. Réessaie, ou choisis un découpage plus court.`);
+      toast(`L’export s’est arrêté à la partie ${reached} : aucun fichier créé. Réessaie, ou choisis un découpage plus court.`, { lasting: true });
     }
   } finally {
     const hadFocus = document.activeElement === els.exportCancel || document.activeElement === document.body;
@@ -926,7 +938,8 @@ function buildSegmented(container, options, selected, onChange) {
   container.replaceChildren(...buttons);
 }
 
-function toast(message, { success = false, action } = {}) {
+// `lasting` : un échec d'export reste à l'écran jusqu'au message suivant, car un long export se laisse tourner dans un autre onglet.
+function toast(message, { success = false, action, lasting = false } = {}) {
   const nodes = [text(message)];
   if (success) {
     const icon = document.createElement('span');
@@ -941,7 +954,7 @@ function toast(message, { success = false, action } = {}) {
   void els.toast.offsetWidth;
   els.toast.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (els.toast.hidden = true), 7000);
+  if (!lasting) toastTimer = setTimeout(() => (els.toast.hidden = true), 7000);
 }
 
 function hostOf(url) {

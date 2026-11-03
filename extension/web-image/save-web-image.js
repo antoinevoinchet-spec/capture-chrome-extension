@@ -2,6 +2,7 @@
 // Le service worker peut s'endormir à tout moment : il n'attend pas l'utilisateur en mémoire. La demande en cours est notée dans storage.session,
 // et l'accord la relance (permissions.onAdded), même après un réveil.
 
+import { downloadEnd } from '../lib/download-end.js';
 import { cleanBase } from '../lib/file-name.js';
 
 const ORIGINS = ['http://*/*', 'https://*/*'];
@@ -26,6 +27,7 @@ export const PENDING_KEY = PENDING;
 let waitingHere = 0;
 let activeSaves = 0;
 let opening = null;
+let okTimer = 0;
 
 // Nom du fichier : le dernier morceau de l'adresse, nettoyé comme ceux du convertisseur, avec l'extension du format.
 export function webImageName(srcUrl, format) {
@@ -69,7 +71,11 @@ async function afterAsking(request, asked) {
   const [answer] = await Promise.allSettled([asked, chrome.storage.session.set({ [PENDING]: { ...request, at: Date.now() } })]);
   waitingHere--;
   await chrome.storage.session.remove(PENDING);
-  if (answer.status === 'rejected') return refuse(request, 'Chrome n’a pas pu ouvrir sa demande d’accès. Refais le clic droit.');
+  // Chrome a pu perdre le geste, par exemple si le clic a réveillé le service worker. Un accès déjà accordé suffit alors.
+  if (answer.status === 'rejected') {
+    const allowed = await chrome.permissions.contains({ origins: ORIGINS }).catch(() => false);
+    return allowed ? fetchAndSave(request) : refuse(request, 'Chrome n’a pas pu ouvrir sa demande d’accès. Refais le clic droit.');
+  }
   return answer.value ? fetchAndSave(request) : refuse(request, NOT_ALLOWED);
 }
 
@@ -85,6 +91,7 @@ export async function resumeWebImage() {
 async function fetchAndSave(request) {
   const { srcUrl, format } = request;
   activeSaves++;
+  await setBadge(request.tabId, '…', '#5f6368');
   try {
     await openDocument();
     const answer = await chrome.runtime.sendMessage({ target: 'web-image-offscreen', url: srcUrl, format, ...self.webImageTesting });
@@ -116,31 +123,11 @@ async function openDocument() {
   await opening;
 }
 
-// Attend que le fichier soit vraiment écrit. Rend le problème rencontré, ou une chaîne vide.
-function downloadEnd(id) {
-  const problemOf = (error) => (error === 'FILE_NO_SPACE' ? 'ton disque est plein. Libère de la place et réessaie.' : 'Chrome n’a pas pu écrire le fichier. Réessaie.');
-  return new Promise((resolve) => {
-    const finish = (problem) => {
-      chrome.downloads.onChanged.removeListener(listener);
-      resolve(problem);
-    };
-    const listener = (delta) => {
-      if (delta.id !== id || !delta.state || delta.state.current === 'in_progress') return;
-      finish(delta.state.current === 'complete' ? '' : problemOf(delta.error?.current));
-    };
-    chrome.downloads.onChanged.addListener(listener);
-    chrome.downloads.search({ id }).then(([found]) => {
-      if (!found || found.state === 'complete') finish('');
-      else if (found.state === 'interrupted') finish(problemOf(found.error));
-    });
-  });
-}
-
 async function refuse({ tabId }, reason) {
   const message = refusalMessage(reason);
   await setBadge(tabId, '!', '#d93025');
   await chrome.action.setTitle({ tabId, title: message }).catch(() => {});
-  await chrome.storage.session.set({ lastError: { message, at: Date.now() } });
+  await chrome.storage.session.set({ lastError: { message, at: Date.now(), tabId } });
   return { ok: false, reason };
 }
 
@@ -148,7 +135,9 @@ async function saved({ tabId }) {
   await chrome.storage.session.remove('lastError');
   await chrome.action.setTitle({ tabId, title: 'Capture' }).catch(() => {});
   await setBadge(tabId, 'OK', '#1a7f37');
-  setTimeout(async () => {
+  // Un seul minuteur : celui d'un enregistrement précédent n'efface pas ce « OK » avant ses 3 secondes.
+  clearTimeout(okTimer);
+  okTimer = setTimeout(async () => {
     // Un autre refus a pu arriver entre-temps : on n'efface que ce « OK ».
     const shown = await chrome.action.getBadgeText({ tabId }).catch(() => '');
     if (shown === 'OK') await setBadge(tabId, '');

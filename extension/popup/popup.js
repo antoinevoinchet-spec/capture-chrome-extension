@@ -67,11 +67,11 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 // Refus survenu pendant une capture lancée au clavier : la fenêtre s'ouvre pour l'afficher.
 const { lastError } = await chrome.storage.session.get('lastError');
-if (lastError && Date.now() - lastError.at < 5 * 60_000) {
-  showError(lastError.message);
+if (lastError) {
   chrome.storage.session.remove('lastError');
-  // La raison est lue : la pastille « ! » de cet onglet n'a plus rien à signaler.
-  chrome.action.setBadgeText({ tabId: tab.id, text: '' }).catch(() => {});
+  // La raison est lue, ou trop ancienne : la pastille « ! » de l'onglet concerné n'a plus rien à signaler.
+  chrome.action.setBadgeText({ tabId: lastError.tabId ?? tab.id, text: '' }).catch(() => {});
+  if (Date.now() - lastError.at < 5 * 60_000) showError(lastError.message);
 }
 
 // Une demande d'accès restée sans suite : le service worker s'est endormi pendant le refus et n'a rien pu dire.
