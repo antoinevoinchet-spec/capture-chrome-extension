@@ -139,6 +139,12 @@ export function saveEdits(captureId, { items, trim }) {
   return writeEdits(captureId, () => ({ items, trim: trim ?? null }));
 }
 
+// Ce que porte chaque capture retouchée : { annotated, trimmed }, par id de capture.
+export async function listEditKinds() {
+  const entries = await onStore(ANNOTATIONS, 'readonly', (store) => store.getAll());
+  return new Map(entries.map(({ captureId, items, trim }) => [captureId, { annotated: items.length > 0, trimmed: Boolean(trim) }]));
+}
+
 // Ids des captures qui portent au moins une annotation ou un cadrage.
 export async function listAnnotatedIds() {
   return new Set(await onStore(ANNOTATIONS, 'readonly', (store) => store.getAllKeys()));

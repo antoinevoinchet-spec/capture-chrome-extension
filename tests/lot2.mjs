@@ -795,6 +795,646 @@ async function groupBouton(context) {
   }
 }
 
+// --- Tous les chemins d'export, les onglets et l'historique ---
+
+const onScreenSplit = (viewer) => viewer.locator('#split [data-key="screen"]').click().then(() => viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 }));
+const backToMedium = (viewer) => viewer.locator('#split [data-key="medium"]').click().then(() => viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 }));
+
+// Décrit une image (octets en base64, ou le presse-papiers si null) : dimensions, pixels « sentinelle », blocs PNG, fin du fichier.
+const analyze = (page, base64) =>
+  page.evaluate(async (base64) => {
+    const blob = base64 === null ? await (await navigator.clipboard.read())[0].getType('image/png') : new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))]);
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const bitmap = await createImageBitmap(blob);
+    const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bitmap, 0, 0);
+    const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+    let sentinel = 0;
+    for (let i = 0; i < data.length; i += 4) if (data[i + 1] > data[i] + 40 && data[i + 1] > data[i + 2] + 40) sentinel++;
+    const isPng = bytes[0] === 0x89;
+    const chunks = [];
+    if (isPng) {
+      const view = new DataView(bytes.buffer);
+      for (let at = 8; at < bytes.length; at += 12 + view.getUint32(at)) chunks.push(String.fromCharCode(...bytes.subarray(at + 4, at + 8)));
+    }
+    const tail = [...bytes.subarray(-2)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    return { width: bitmap.width, height: bitmap.height, sentinel, chunks, clean: (isPng ? chunks.at(-1) === 'IEND' && tail === '6082' : tail === 'ffd9') && !chunks.some((name) => /^(tEXt|zTXt|iTXt|eXIf|tIME)$/.test(name)) };
+  }, base64);
+const analyzeFile = async (page, file) => analyze(page, (await fs.readFile(file)).toString('base64'));
+const fileOk = (info, trim) => info.width === trim.w && info.sentinel === 0 && info.clean;
+
+// Clique ou tape, attend la notification de copie et décrit le presse-papiers.
+async function copied(viewer, act) {
+  await viewer.evaluate(() => (document.getElementById('toast').hidden = true));
+  await act();
+  await viewer.waitForFunction(
+    () => {
+      const toast = document.getElementById('toast');
+      return !toast.hidden && /presse-papiers|impossible|recalcule|Valide/.test(toast.textContent);
+    },
+    null,
+    { timeout: 60_000 },
+  );
+  const message = await viewer.locator('#toast').innerText();
+  if (!/presse-papiers/.test(message)) return { refused: message };
+  return analyze(viewer, null);
+}
+
+async function savedFiles(context, count) {
+  const sw = context.serviceWorkers()[0];
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const downloads = await sw.evaluate(async () => (await chrome.downloads.search({ orderBy: ['startTime'] })).map((d) => ({ file: d.filename, done: d.state === 'complete' })));
+    if (downloads.length >= count && downloads.every((d) => d.done)) return downloads.map((d) => d.file);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error('téléchargements incomplets');
+}
+
+async function downloaded(context, viewer, trigger, count) {
+  await context.serviceWorkers()[0].evaluate(() => chrome.downloads.erase({}));
+  await viewer.evaluate(() => (document.getElementById('toast').hidden = true));
+  await trigger();
+  await viewer.waitForFunction(() => /enregistr|impossible|arrêté/.test(document.getElementById('toast').textContent) && !document.getElementById('toast').hidden, null, { timeout: 120_000 });
+  return savedFiles(context, count);
+}
+
+const partSizes = async (viewer) => (await viewer.locator('figure.part .part-size').allInnerTexts()).map((size) => size.split('×').map((side) => Number(side.replace(/\D/g, ''))));
+
+const editsOf = (page, id) =>
+  page.evaluate(async (id) => {
+    const { getEdits } = await import(chrome.runtime.getURL('lib/db.js'));
+    return getEdits(id);
+  }, id);
+const putEdits = (page, id, edits) =>
+  page.evaluate(
+    async ({ id, edits }) => {
+      const { saveEdits } = await import(chrome.runtime.getURL('lib/db.js'));
+      await saveEdits(id, edits);
+    },
+    { id, edits },
+  );
+
+async function storedWhen(page, id, ready) {
+  const deadline = Date.now() + 8000;
+  for (;;) {
+    const edits = await editsOf(page, id);
+    if (ready(edits) || Date.now() > deadline) return edits;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+// Règle au clavier le cadre de la capture « sentinelle » (échelle 2) sur son rectangle exact.
+async function setSentinelFrame(viewer) {
+  await startTrim(viewer);
+  const presses = async (edge, key, count) => {
+    await handle(viewer, edge).focus();
+    for (let i = 0; i < count; i++) await viewer.keyboard.press(`Shift+${key}`);
+  };
+  await presses('nw', 'ArrowRight', 20);
+  await presses('nw', 'ArrowDown', 30);
+  await presses('se', 'ArrowLeft', 60);
+  await presses('se', 'ArrowUp', 30);
+}
+
+// Trace une flèche horizontale, en points d'écran depuis le coin haut gauche de l'image.
+async function drawArrow(viewer) {
+  await viewer.evaluate(() => {
+    document.getElementById('editor-scroll').scrollTop = 0;
+  });
+  const page = await viewer.locator('#editor-page').boundingBox();
+  await viewer.mouse.move(page.x + 200, page.y + 300);
+  await viewer.mouse.down();
+  await viewer.mouse.move(page.x + 500, page.y + 300, { steps: 5 });
+  await viewer.mouse.up();
+  return { x: page.x + 350, y: page.y + 300 };
+}
+
+const quickTrim = async (viewer, text) => {
+  await startTrim(viewer);
+  await viewer.keyboard.press('Shift+ArrowDown');
+  await viewer.keyboard.press('Enter');
+  await waitTrim(viewer, text);
+};
+const finishEditor = async (viewer) => {
+  await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+  await viewer.waitForSelector('#editor', { state: 'hidden' });
+  await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+};
+
+async function groupChemins(context) {
+  console.log('\n— Tous les chemins, les onglets et l’historique');
+  const home = await extensionPage(context, 'viewer/viewer.html');
+  await home.waitForSelector('body[data-ready="true"]');
+  await resetDb(home);
+  const scale = 2;
+  const trim = frameFor(scale);
+  const id = await seedSentinel(home, scale);
+  await putEdits(home, id, { items: [], trim });
+  const opened = (run) => withViewer(context, id, run);
+  try {
+    await test('chemin 1 : bouton « Copier l’image » de l’en-tête', () =>
+      opened(async (viewer) => {
+        const info = await copied(viewer, () => viewer.locator('#copy-current').click());
+        return { ok: info.width === trim.w && info.height === trim.h && info.sentinel === 0, detail: JSON.stringify(info) };
+      }),
+    );
+    await test('chemin 2 : ⌘C de la page', () =>
+      opened(async (viewer) => {
+        const info = await copied(viewer, () => viewer.keyboard.press('Meta+c'));
+        return { ok: info.width === trim.w && info.height === trim.h && info.sentinel === 0, detail: JSON.stringify(info) };
+      }),
+    );
+    await test('chemin 3 : clic droit sur l’image affichée', () =>
+      opened(async (viewer) => {
+        const info = await copied(viewer, async () => {
+          await viewer.locator('.sheet').first().click({ button: 'right' });
+          await viewer.locator('#image-menu [data-action="copy"]').click();
+        });
+        const [file] = await downloaded(context, viewer, async () => {
+          await viewer.locator('.sheet').first().click({ button: 'right' });
+          await viewer.locator('#image-menu [data-action="download"]').click();
+        }, 1);
+        const saved = await analyzeFile(viewer, file);
+        return { ok: info.width === trim.w && info.sentinel === 0 && fileOk(saved, trim), detail: `${JSON.stringify(info)} ; fichier ${JSON.stringify(saved)}` };
+      }),
+    );
+    await test('chemin 4 : téléchargement d’une image', () =>
+      opened(async (viewer) => {
+        const [file] = await downloaded(context, viewer, () => viewer.locator('.part-save').first().click(), 1);
+        const info = await analyzeFile(viewer, file);
+        return { ok: fileOk(info, trim) && info.height === trim.h, detail: JSON.stringify(info) };
+      }),
+    );
+    await test('chemin 5 : Tout télécharger', () =>
+      opened(async (viewer) => {
+        await onScreenSplit(viewer);
+        const files = await downloaded(context, viewer, () => viewer.locator('#download-all').click(), 2);
+        const infos = [];
+        for (const file of files) infos.push(await analyzeFile(viewer, file));
+        await backToMedium(viewer);
+        const total = infos.reduce((sum, info) => sum + info.height, 0);
+        return { ok: infos.length === 2 && infos.every((info) => fileOk(info, trim)) && total === trim.h, detail: JSON.stringify(infos).slice(0, 220) };
+      }),
+    );
+    await test('chemin 6 : PDF', () =>
+      opened(async (viewer) => {
+        await onScreenSplit(viewer);
+        const [file] = await downloaded(context, viewer, async () => {
+          await viewer.locator('#export').click();
+          await viewer.locator('#export-menu [data-export="pdf"]').click();
+        }, 1);
+        await backToMedium(viewer);
+        const { stdout } = await run('pdfinfo', ['-box', '-f', '1', '-l', '99', file]);
+        const pages = [...stdout.matchAll(/Page\s+\d+ MediaBox:\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/g)].map((m) => [Number(m[3]), Number(m[4])]);
+        const infos = [];
+        for (const [index] of pages.entries()) {
+          const prefix = path.join(WORK, `chemin-pdf-${index}`);
+          await run('pdftoppm', ['-r', '96', '-f', String(index + 1), '-l', String(index + 1), '-singlefile', '-png', file, prefix]);
+          infos.push(await analyzeFile(viewer, `${prefix}.png`));
+        }
+        const total = pages.reduce((sum, [, height]) => sum + height, 0);
+        const ok = pages.length === 2 && pages.every(([width]) => width === trim.w * 0.75) && total === trim.h * 0.75 && infos.every((info) => info.sentinel === 0 && info.width === trim.w);
+        return { ok, detail: `${JSON.stringify(pages)} ; sentinelle ${infos.map((info) => info.sentinel).join(',')}` };
+      }),
+    );
+    await test('chemin 7 : zip', () =>
+      opened(async (viewer) => {
+        await onScreenSplit(viewer);
+        const [file] = await downloaded(context, viewer, async () => {
+          await viewer.locator('#export').click();
+          await viewer.locator('#export-menu [data-export="zip"]').click();
+        }, 1);
+        await backToMedium(viewer);
+        const dir = path.join(WORK, 'chemin-zip');
+        await run('unzip', ['-o', '-q', file, '-d', dir]);
+        const names = (await fs.readdir(dir)).sort();
+        const infos = [];
+        for (const name of names) infos.push(await analyzeFile(viewer, path.join(dir, name)));
+        const total = infos.reduce((sum, info) => sum + info.height, 0);
+        return { ok: names.length === 2 && infos.every((info) => fileOk(info, trim)) && total === trim.h, detail: `${names.join()} ; ${JSON.stringify(infos).slice(0, 180)}` };
+      }),
+    );
+    await test('chemin 8 : aperçus de la page', () =>
+      opened(async (viewer) => {
+        const got = await viewer.evaluate(() =>
+          [...document.querySelectorAll('.sheet canvas')].map((canvas) => {
+            const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+            let greenish = 0;
+            for (let i = 0; i < data.length; i += 4) if (data[i + 1] > data[i] + 12 && data[i + 1] > data[i + 2] + 12) greenish++;
+            return { ratio: canvas.height / canvas.width, greenish };
+          }),
+        );
+        const ok = got.length === 1 && got[0].greenish === 0 && Math.abs(got[0].ratio - trim.h / trim.w) < 0.01;
+        return { ok, detail: JSON.stringify(got) };
+      }),
+    );
+    await test('chemin 9 : vignette de l’historique', () =>
+      opened(async (viewer) => {
+        const selector = `.history-item[data-id="${id}"] .history-thumb`;
+        await viewer.waitForFunction((selector) => document.querySelector(selector)?.width > 0 && document.querySelector(selector).getContext('2d').getImageData(10, 10, 1, 1).data[3] > 0, selector, { timeout: 15_000 });
+        const got = await viewer.evaluate((selector) => {
+          const canvas = document.querySelector(selector);
+          const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+          let greenish = 0;
+          for (let i = 0; i < data.length; i += 4) if (data[i + 1] > data[i] + 12 && data[i + 1] > data[i + 2] + 12) greenish++;
+          return { size: [canvas.width, canvas.height], greenish };
+        }, selector);
+        return { ok: got.greenish === 0, detail: JSON.stringify(got) };
+      }),
+    );
+    await test('chemin 10 : #editor-copy, cadrage déjà enregistré', () =>
+      opened(async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        const info = await copied(viewer, () => viewer.locator('#editor-copy').click());
+        return { ok: info.width === trim.w && info.height === trim.h && info.sentinel === 0, detail: JSON.stringify(info) };
+      }),
+    );
+    await test('chemin 11 : ⌘C dans l’éditeur, cadrage déjà enregistré', () =>
+      opened(async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        const info = await copied(viewer, () => viewer.keyboard.press('Meta+c'));
+        return { ok: info.width === trim.w && info.height === trim.h && info.sentinel === 0, detail: JSON.stringify(info) };
+      }),
+    );
+
+    // Une capture neuve, recadrée à la main dans l'éditeur, sans « Terminer ».
+    const fresh = await seedSentinel(home, scale);
+    const untilCopied = async (viewer, act) => {
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const info = await copied(viewer, act);
+        if (!info.refused) return info;
+        await viewer.waitForTimeout(100);
+      }
+      throw new Error('copie toujours refusée');
+    };
+    await test('chemin 10 bis : #editor-copy juste après Entrée, sans Terminer', () =>
+      withViewer(context, fresh, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await setSentinelFrame(viewer);
+        await viewer.keyboard.press('Enter');
+        const info = await untilCopied(viewer, () => viewer.locator('#editor-copy').click());
+        await viewer.keyboard.press('Meta+z');
+        await waitTrim(viewer, '');
+        await storedWhen(home, fresh, (edits) => edits.trim === null);
+        return { ok: info.width === trim.w && info.height === trim.h && info.sentinel === 0, detail: JSON.stringify(info) };
+      }),
+    );
+    await test('chemin 11 bis : ⌘C juste après Entrée, sans Terminer', () =>
+      withViewer(context, fresh, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await setSentinelFrame(viewer);
+        await viewer.keyboard.press('Enter');
+        const info = await untilCopied(viewer, () => viewer.keyboard.press('Meta+c'));
+        await viewer.keyboard.press('Meta+z');
+        await waitTrim(viewer, '');
+        await storedWhen(home, fresh, (edits) => edits.trim === null);
+        return { ok: info.width === trim.w && info.height === trim.h && info.sentinel === 0, detail: JSON.stringify(info) };
+      }),
+    );
+    await test('copie refusée tant que le calcul des coupes n’est pas fini, puis annulation et rétablissement justes', () =>
+      withViewer(context, fresh, async (viewer) => {
+        await viewer.evaluate(async () => {
+          const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+          const real = Stitcher.prototype.planParts;
+          Stitcher.prototype.planParts = function (...args) {
+            return new Promise((resolve) => setTimeout(resolve, 900)).then(() => real.apply(this, args));
+          };
+        });
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await setSentinelFrame(viewer);
+        await viewer.keyboard.press('Enter');
+        const refusedKey = await copied(viewer, () => viewer.keyboard.press('Meta+c'));
+        const refusedButton = await copied(viewer, () => viewer.locator('#editor-copy').click());
+        const framed = await untilCopied(viewer, () => viewer.locator('#editor-copy').click());
+        await viewer.keyboard.press('Meta+z');
+        const refusedUndo = await copied(viewer, () => viewer.keyboard.press('Meta+c'));
+        const whole = await untilCopied(viewer, () => viewer.keyboard.press('Meta+c'));
+        await viewer.keyboard.press('Meta+Shift+z');
+        const again = await untilCopied(viewer, () => viewer.keyboard.press('Meta+c'));
+        await viewer.keyboard.press('Meta+z');
+        await waitTrim(viewer, '');
+        await storedWhen(home, fresh, (edits) => edits.trim === null);
+        const ok =
+          /recalcule/.test(refusedKey.refused ?? '') && /recalcule/.test(refusedButton.refused ?? '') && /recalcule/.test(refusedUndo.refused ?? '') &&
+          framed.width === trim.w && framed.sentinel === 0 && whole.width === 2000 && whole.sentinel > 0 && again.width === trim.w && again.sentinel === 0;
+        return { ok, detail: JSON.stringify({ refusedKey, framed: framed.width, whole: whole.width, again: again.width }) };
+      }),
+    );
+    await test('coupes : recalculées sur la zone recadrée, et transmises à l’éditeur', () =>
+      withViewer(context, fresh, async (viewer) => {
+        await onScreenSplit(viewer);
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        const tops = () => viewer.evaluate(() => [...document.querySelectorAll('.editor-cut')].map((line) => parseFloat(line.style.top)));
+        const view = await scaleOf(viewer);
+        const before = await tops();
+        await setSentinelFrame(viewer);
+        await viewer.keyboard.press('Enter');
+        await waitTrim(viewer, `${trim.x},${trim.y},${trim.w},${trim.h}`);
+        await viewer.waitForFunction((before) => JSON.stringify([...document.querySelectorAll('.editor-cut')].map((line) => parseFloat(line.style.top))) !== JSON.stringify(before), before, { timeout: 10_000 });
+        const after = await tops();
+        const inside = after.every((top) => top / view > trim.y && top / view < trim.y + trim.h);
+        await viewer.keyboard.press('Meta+z');
+        await waitTrim(viewer, '');
+        await storedWhen(home, fresh, (edits) => edits.trim === null);
+        await finishEditor(viewer);
+        await backToMedium(viewer);
+        return { ok: after.length === 1 && inside, detail: `${before.join()} → ${after.join()} (échelle ${view.toFixed(3)})` };
+      }),
+    );
+
+    const W = 2560;
+    const H = 1800;
+    const framed = `0,10,${W},${H - 10}`;
+    const TRIMMED = { x: 0, y: 10, w: W, h: H - 10 };
+
+    await test('onglets : export recadré dans un deuxième onglet', async () => {
+      const other = await seedSentinel(home, scale);
+      return withViewer(context, other, async (first) => {
+        const second = await extensionPage(context, `viewer/viewer.html?id=${other}`);
+        try {
+          await second.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+          await first.bringToFront();
+          await annotateButton(first).click();
+          await editorReady(first);
+          await setSentinelFrame(first);
+          await first.keyboard.press('Enter');
+          await waitTrim(first, `${trim.x},${trim.y},${trim.w},${trim.h}`);
+          await second.bringToFront();
+          await second.waitForFunction((w) => document.querySelector('figure.part .part-size')?.textContent.replace(/\D/g, '').startsWith(String(w)), trim.w, { timeout: 15_000 });
+          await second.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+          const [file] = await downloaded(context, second, () => second.locator('.part-save').first().click(), 1);
+          const info = await analyzeFile(second, file);
+          const [[width, height]] = await partSizes(second);
+          return { ok: fileOk(info, trim) && width === trim.w && height === trim.h, detail: `${JSON.stringify(info)} ; légende ${width} × ${height}` };
+        } finally {
+          await second.close();
+        }
+      });
+    });
+
+    await test('recharger : le cadrage revient', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      return withViewer(context, other, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await quickTrim(viewer, framed);
+        await storedWhen(home, other, (edits) => edits.trim);
+        await viewer.reload();
+        await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+        const [[width, height]] = await partSizes(viewer);
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        const back = await trimOf(viewer);
+        return { ok: width === W && height === H - 10 && same(back, TRIMMED), detail: `${width} × ${height}, ${JSON.stringify(back)}` };
+      });
+    });
+
+    await test('historique : recadrée, et non annotée', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      return withViewer(context, other, async (viewer) => {
+        const mention = () => viewer.locator(`.history-item[data-id="${other}"] .history-meta`).innerText();
+        const plain = await mention();
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await quickTrim(viewer, framed);
+        await viewer.waitForFunction((id) => /recadrée/.test(document.querySelector(`.history-item[data-id="${id}"] .history-meta`).textContent), other, { timeout: 8000 });
+        const trimmed = await mention();
+        const arrow = await drawArrow(viewer);
+        await viewer.waitForFunction((id) => /annotée/.test(document.querySelector(`.history-item[data-id="${id}"] .history-meta`).textContent), other, { timeout: 8000 });
+        const annotated = await mention();
+        void arrow;
+        await viewer.reload();
+        await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+        const reloaded = await mention();
+        const ok = !/recadrée|annotée/.test(plain) && /recadrée/.test(trimmed) && !/annotée/.test(trimmed) && /annotée/.test(annotated) && /annotée/.test(reloaded);
+        return { ok, detail: JSON.stringify({ plain, trimmed, annotated, reloaded }) };
+      });
+    });
+
+    await test('suppression : n’annonce ses annotations que s’il y en a', async () => {
+      const onlyTrim = await seedCapture(home, { heightPoints: 300 });
+      const both = await seedCapture(home, { heightPoints: 300 });
+      await putEdits(home, onlyTrim, { items: [], trim: { x: 0, y: 0, w: 100, h: 100 } });
+      await putEdits(home, both, { items: [RECT], trim: { x: 0, y: 0, w: 500, h: 500 } });
+      return withViewer(context, both, async (viewer) => {
+        const asked = async (target) => {
+          const dialog = viewer.waitForEvent('dialog');
+          const clicking = viewer.locator('#history li').filter({ has: viewer.locator(`.history-item[data-id="${target}"]`) }).getByRole('button', { name: 'Supprimer cette capture', exact: true }).click();
+          const shown = await dialog;
+          const message = shown.message();
+          await shown.dismiss();
+          await clicking;
+          return message;
+        };
+        const first = await asked(onlyTrim);
+        const second = await asked(both);
+        return { ok: !/annotations/.test(first) && /et ses annotations/.test(second), detail: `${first} / ${second}` };
+      });
+    });
+
+    await test('Tout effacer : actif avec un cadrage seul', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      return withViewer(context, other, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        const clear = viewer.getByRole('button', { name: 'Tout effacer', exact: true });
+        const before = await clear.isDisabled();
+        await quickTrim(viewer, framed);
+        const after = await clear.isDisabled();
+        return { ok: before && !after, detail: `inactif avant : ${before}, inactif après : ${after}` };
+      });
+    });
+
+    await test('Tout effacer : la question sans cadrage est inchangée', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      await putEdits(home, other, { items: [{ ...RECT, x: 500, y: 300 }], trim: null });
+      return withViewer(context, other, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        const dialog = viewer.waitForEvent('dialog');
+        const clicking = viewer.getByRole('button', { name: 'Tout effacer', exact: true }).click();
+        const shown = await dialog;
+        const message = shown.message();
+        await shown.dismiss();
+        await clicking;
+        return { ok: message === 'Effacer toutes les annotations de cette capture ?', detail: message };
+      });
+    });
+
+    await test('Tout effacer avec cadrage : question « …annotations et cadrage… », et la capture redevient brute', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      const before = await sliceHashes(home, other);
+      return withViewer(context, other, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await quickTrim(viewer, framed);
+        await drawArrow(viewer);
+        await storedWhen(home, other, (edits) => edits.items.length === 1 && edits.trim);
+        let message = '';
+        viewer.once('dialog', (dialog) => {
+          message = dialog.message();
+          dialog.accept();
+        });
+        await viewer.getByRole('button', { name: 'Tout effacer', exact: true }).click();
+        await waitTrim(viewer, '');
+        const stored = await storedWhen(home, other, (edits) => !edits.items.length && !edits.trim);
+        await finishEditor(viewer);
+        const [[width, height]] = await partSizes(viewer);
+        const after = await sliceHashes(home, other);
+        const ok = /annotations et (le )?cadrage/.test(message) && same(stored, { items: [], trim: null }) && width === W && height === H && same(before, after);
+        return { ok, detail: `${message} ; ${JSON.stringify(stored)} ; ${width} × ${height} ; tranches identiques ${same(before, after)}` };
+      });
+    });
+
+    await test('Tout effacer et Rétablir : tranches identiques par hachage', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      const before = await sliceHashes(home, other);
+      return withViewer(context, other, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await quickTrim(viewer, framed);
+        await storedWhen(home, other, (edits) => edits.trim);
+        const whileTrimmed = await sliceHashes(home, other);
+        await viewer.locator('#editor-trim-reset').click();
+        await waitTrim(viewer, '');
+        await storedWhen(home, other, (edits) => !edits.trim);
+        const afterReset = await sliceHashes(home, other);
+        await quickTrim(viewer, framed);
+        viewer.once('dialog', (dialog) => dialog.accept());
+        await viewer.getByRole('button', { name: 'Tout effacer', exact: true }).click();
+        await waitTrim(viewer, '');
+        await storedWhen(home, other, (edits) => !edits.trim);
+        const afterClear = await sliceHashes(home, other);
+        return { ok: same(before, whileTrimmed) && same(before, afterReset) && same(before, afterClear), detail: `${before.length} tranches` };
+      });
+    });
+
+    await test('réouverture depuis l’historique : le cadrage revient', async () => {
+      const a = await seedCapture(home, { heightPoints: 900 });
+      const b = await seedCapture(home, { heightPoints: 500 });
+      await putEdits(home, a, { items: [], trim: TRIMMED });
+      return withViewer(context, b, async (viewer) => {
+        const before = await partSizes(viewer);
+        await viewer.locator(`.history-item[data-id="${a}"]`).click();
+        await viewer.waitForFunction((h) => document.querySelector('figure.part .part-size')?.textContent.replace(/\D/g, '').endsWith(String(h)), H - 10, { timeout: 15_000 });
+        await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+        const after = await partSizes(viewer);
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        const back = await trimOf(viewer);
+        return { ok: after[0][1] === H - 10 && same(back, TRIMMED), detail: `${JSON.stringify(before)} → ${JSON.stringify(after)}, ${JSON.stringify(back)}` };
+      });
+    });
+
+    await test('cadrage : recadrer puis annoter le garde après rechargement', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      const before = await sliceHashes(home, other);
+      return withViewer(context, other, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await quickTrim(viewer, framed);
+        await drawArrow(viewer);
+        await storedWhen(home, other, (edits) => edits.items.length === 1 && edits.trim);
+        await viewer.reload();
+        await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+        const stored = await editsOf(home, other);
+        const [[, height]] = await partSizes(viewer);
+        const after = await sliceHashes(home, other);
+        return { ok: stored.items.length === 1 && same(stored.trim, TRIMMED) && height === H - 10 && same(before, after), detail: `${stored.items.length} annotation, ${JSON.stringify(stored.trim)}, hauteur ${height}` };
+      });
+    });
+
+    await test('cadrage : recadrer, annoter, annuler l’annotation le garde', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      const before = await sliceHashes(home, other);
+      return withViewer(context, other, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await quickTrim(viewer, framed);
+        await drawArrow(viewer);
+        await storedWhen(home, other, (edits) => edits.items.length === 1);
+        await viewer.keyboard.press('Meta+z');
+        const stored = await storedWhen(home, other, (edits) => !edits.items.length);
+        const shown = await trimOf(viewer);
+        const after = await sliceHashes(home, other);
+        return { ok: !stored.items.length && same(stored.trim, TRIMMED) && same(shown, TRIMMED) && same(before, after), detail: JSON.stringify(stored) };
+      });
+    });
+
+    await test('cadrage : recadrer, annoter, supprimer la dernière annotation, recharger le garde', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      const before = await sliceHashes(home, other);
+      return withViewer(context, other, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await quickTrim(viewer, framed);
+        const middle = await drawArrow(viewer);
+        await storedWhen(home, other, (edits) => edits.items.length === 1);
+        await viewer.mouse.click(middle.x, middle.y);
+        await viewer.keyboard.press('Backspace');
+        const stored = await storedWhen(home, other, (edits) => !edits.items.length);
+        await viewer.reload();
+        await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+        const [[, height]] = await partSizes(viewer);
+        const mention = await viewer.locator(`.history-item[data-id="${other}"] .history-meta`).innerText();
+        const after = await sliceHashes(home, other);
+        return { ok: !stored.items.length && same(stored.trim, TRIMMED) && height === H - 10 && /recadrée/.test(mention) && same(before, after), detail: `${JSON.stringify(stored)}, hauteur ${height}, « ${mention} »` };
+      });
+    });
+
+    await test('ancienne capture : une entrée sans cadrage s’ouvre, s’annote et s’exporte comme avant', async () => {
+      const other = await seedCapture(home, { heightPoints: 900 });
+      await home.evaluate(
+        async ({ id, rect }) => {
+          const db = await new Promise((resolve, reject) => {
+            const req = indexedDB.open('capture');
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          });
+          await new Promise((resolve, reject) => {
+            const tx = db.transaction('annotations', 'readwrite');
+            tx.objectStore('annotations').put({ captureId: id, items: [rect], updatedAt: 1 });
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error);
+          });
+          db.close();
+        },
+        { id: other, rect: RECT },
+      );
+      return withViewer(context, other, async (viewer) => {
+        const [[width, height]] = await partSizes(viewer);
+        const mention = await viewer.locator(`.history-item[data-id="${other}"] .history-meta`).innerText();
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        const shown = await trimOf(viewer);
+        await drawArrow(viewer);
+        const stored = await storedWhen(home, other, (edits) => edits.items.length === 2);
+        const hasTrimField = await home.evaluate(async (id) => {
+          const db = await new Promise((resolve) => {
+            const req = indexedDB.open('capture');
+            req.onsuccess = () => resolve(req.result);
+          });
+          const entry = await new Promise((resolve) => {
+            const req = db.transaction('annotations').objectStore('annotations').get(id);
+            req.onsuccess = () => resolve(req.result);
+          });
+          db.close();
+          return 'trim' in entry;
+        }, other);
+        return { ok: width === W && height === H && /annotée/.test(mention) && shown === null && stored.items.length === 2 && stored.trim === null && !hasTrimField, detail: `${width} × ${height}, « ${mention} », ${stored.items.length} annotations, champ trim : ${hasTrimField}` };
+      });
+    });
+  } finally {
+    await home.close();
+  }
+}
+
 async function main() {
   await fs.rm(WORK, { recursive: true, force: true });
   await fs.mkdir(WORK, { recursive: true });
@@ -807,7 +1447,7 @@ async function main() {
   const context = await launch(extension, 'profile', WORK);
   try {
     context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
-    const groups = { stockage: groupStockage, rendu: groupRendu, bouton: groupBouton };
+    const groups = { stockage: groupStockage, rendu: groupRendu, bouton: groupBouton, chemins: groupChemins };
     for (const [name, group] of Object.entries(groups)) {
       if (ONLY && ONLY !== name) continue;
       await group(context);

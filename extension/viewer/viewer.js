@@ -1,6 +1,6 @@
 import { openEditor } from '../annotate/editor.js';
 import { avoidRanges, drawAnnotations } from '../annotate/render.js';
-import { CaptureGone, deleteCapture, getAnnotations, getCapture, listAnnotatedIds, listCaptures, saveAnnotations } from '../lib/db.js';
+import { CaptureGone, deleteCapture, getCapture, getEdits, listCaptures, listEditKinds, saveEdits } from '../lib/db.js';
 import { downloadEnd } from '../lib/download-end.js';
 import { FORMATS, SPLITS, loadSettings, saveSettings } from '../lib/settings.js';
 import { exportPdf, exportZip } from './export.js';
@@ -57,11 +57,11 @@ const px = (n) => numbers.format(Math.round(n));
 let settings;
 let record = null;
 let stitcher = null;
-// Annotations de la capture ouverte, rangées dans un objet propre à chaque capture : le rendu d'une capture quittée
+// Annotations et cadrage de la capture ouverte, rangés dans un objet propre à chaque capture : le rendu d'une capture quittée
 // (copie ou export encore en file) lit le sien, jamais celui de la capture qui vient de s'ouvrir.
-let annotationState = { items: [] };
-// Ids des captures annotées : l'historique le dit, et elles échappent au nettoyage automatique.
-let annotatedIds = new Set();
+let annotationState = { items: [], trim: null };
+// Ce que porte chaque capture retouchée : l'historique le dit, et elle échappe au nettoyage automatique.
+let editKinds = new Map();
 let parts = [];
 let layoutToken = 0;
 let busy = false;
@@ -78,7 +78,7 @@ let editorLock = null;
 // Écritures des annotations, l'une après l'autre, et leur nombre en attente (en file ou en cours).
 let saveQueue = Promise.resolve();
 let pendingSaves = 0;
-// Dernière écriture qui a échoué (capture et liste complète), tant qu'aucune écriture de cette capture n'a réussi depuis.
+// Dernière écriture qui a échoué (capture, liste complète et cadrage), tant qu'aucune écriture de cette capture n'a réussi depuis.
 let failedSave = null;
 // Nombre de changements de capture en cours (ouverture d'une autre, suppression) : tant qu'il y en a, « Annoter » est refusé.
 let leaving = 0;
@@ -121,12 +121,12 @@ async function init() {
   // Quitter la page tant que des annotations s'écrivent, ou après une écriture ratée, les perdrait : Chrome demande confirmation,
   // et l'écriture ratée est retentée pendant que la question est posée.
   window.addEventListener('beforeunload', (event) => {
-    if (failedSave && !pendingSaves) queueSave(failedSave.captureId, failedSave.items);
+    if (failedSave && !pendingSaves) queueSave(failedSave.captureId, failedSave.edits);
     if (pendingSaves || failedSave) event.preventDefault();
   });
 
   const captures = await listCaptures();
-  annotatedIds = await listAnnotatedIds();
+  editKinds = await listEditKinds();
   const id = new URLSearchParams(location.search).get('id') ?? captures[0]?.id;
   renderHistory(captures);
   if (!id) {
@@ -150,7 +150,7 @@ async function openCapture(id) {
       showEmpty('Capture introuvable', 'Elle a été supprimée, ou retirée de l’historique, qui garde les 15 dernières captures non annotées.');
       return;
     }
-    const state = { items: await getAnnotations(id) };
+    const state = await getEdits(id);
     // Filet : « Annoter » étant refusé depuis le début, l'éditeur ne devrait pas être ouvert ; on ne change pas sa capture sous lui.
     if (editing) return;
     stitcher?.dispose();
@@ -161,7 +161,8 @@ async function openCapture(id) {
     const { scale } = next;
     // Lit `state` à chaque rendu, donc toujours à jour pour les exports et les aperçus de cette capture (copies faites depuis l'éditeur).
     stitcher = new Stitcher(record, {
-      overlay: (ctx, top, height, ratio) => drawAnnotations(ctx, state.items, scale, top, height, ratio),
+      trim: state.trim,
+      overlay: (ctx, top, height, ratio, left) => drawAnnotations(ctx, state.items, scale, top, height, ratio, left),
     });
     history.replaceState(null, '', `?id=${id}`);
 
@@ -171,7 +172,7 @@ async function openCapture(id) {
     els.meta.replaceChildren(
       text(host || 'Page locale'),
       text(dates.format(record.createdAt)),
-      text(`${px(record.width)} × ${px(record.height)} px au total`),
+      text(''),
     );
     els.notice.hidden = !record.truncated;
     markHistory(id);
@@ -187,10 +188,10 @@ async function openCapture(id) {
 // Avant de quitter une capture dont la dernière écriture a échoué : on la retente une fois ; si elle échoue encore, la personne choisit.
 async function confirmLeaving() {
   if (!failedSave) return true;
-  const { captureId, items } = failedSave;
+  const { captureId, edits } = failedSave;
   try {
-    await saveAnnotations(captureId, items);
-    markAnnotated(captureId, items.length > 0);
+    await saveEdits(captureId, edits);
+    markEdited(captureId, edits);
   } catch (err) {
     console.error(err);
     // Supprimée entre-temps : plus rien à retenter, ni à demander.
@@ -206,9 +207,18 @@ function forgetFailedSave() {
   releaseEditorLock();
 }
 
-// Remplace les annotations de la capture ouverte (utilisé par l'éditeur).
-function setAnnotations(items) {
+// Remplace les annotations et le cadrage de la capture ouverte.
+function setEdits({ items, trim }) {
   annotationState.items = items;
+  annotationState.trim = trim;
+  stitcher.setTrim(trim);
+}
+
+// Les coupes de la capture ouverte, d'après son découpage, son cadrage et ses annotations.
+function planCurrent() {
+  const split = SPLITS[settings.split];
+  const maxHeight = split.points ? split.points * record.scale : record.crop.h;
+  return stitcher.planParts(maxHeight, avoidRanges(annotationState.items, record.scale));
 }
 
 // Ouvre l'éditeur sur l'image `index`. Un seul éditeur à la fois par capture, tous onglets confondus : deux éditeurs s'écraseraient
@@ -263,7 +273,7 @@ async function editUnderLock(captureId, top) {
   }
   editing = true;
   edited = false;
-  await adoptStoredAnnotations(captureId);
+  await adoptStoredEdits(captureId);
   if (planning || leaving) {
     editing = false;
     releaseEditorLock();
@@ -274,27 +284,44 @@ async function editUnderLock(captureId, top) {
     stitcher,
     parts,
     items: annotationState.items,
+    trim: annotationState.trim,
     startTop: top,
-    onChange: ({ items }) => {
+    onChange: (edits) => {
       edited = true;
-      setAnnotations(items);
-      queueSave(captureId, items);
+      setEdits(edits);
+      queueSave(captureId, edits);
     },
     onCopy: (partIndex) => copyPart(partIndex, null),
     onClose: () => closeAnnotate(captureId, top),
+    onRefuse: (message) => toast(message),
+    // Après un changement de cadrage : `parts` suit, pour que la copie faite depuis l'éditeur découpe bien ce qui est affiché.
+    replan: async () => {
+      try {
+        parts = await planCurrent();
+      } catch (err) {
+        console.error(err);
+        toast(`Les coupes n’ont pas pu être recalculées : ${err.message}`);
+      }
+      return parts;
+    },
   });
 }
 
-// L'éditeur part de la liste enregistrée : le message d'un autre onglet peut être en retard, ou perdu si cet onglet était en pause.
-// Une écriture ratée ici garde la main (la liste enregistrée est plus ancienne). Une base vide ne remplace rien : la capture a pu être
+// L'éditeur part de l'état enregistré : le message d'un autre onglet peut être en retard, ou perdu si cet onglet était en pause.
+// Une écriture ratée ici garde la main (l'état enregistré est plus ancien). Une base vide ne remplace rien : la capture a pu être
 // supprimée ailleurs, et ses images affichées, encore copiables, perdraient leurs masques.
-async function adoptStoredAnnotations(captureId) {
+async function adoptStoredEdits(captureId) {
   await saveQueue;
   if (failedSave?.captureId === captureId) return;
-  const stored = await getAnnotations(captureId);
-  if (!stored.length || JSON.stringify(stored) === JSON.stringify(annotationState.items)) return;
-  setAnnotations(stored);
+  const stored = await getEdits(captureId);
+  if (!stored.items.length && !stored.trim) return;
+  const sameItems = JSON.stringify(stored.items) === JSON.stringify(annotationState.items);
+  const sameTrim = JSON.stringify(stored.trim) === JSON.stringify(annotationState.trim);
+  if (sameItems && sameTrim) return;
+  setEdits(stored);
   edited = true;
+  // L'éditeur reçoit les coupes du cadrage qu'il va montrer.
+  if (!sameTrim) parts = await planCurrent();
 }
 
 // L'éditeur est fermé. Si les annotations ont changé : nouvelles coupes (elles évitent les annotations) et aperçus à jour.
@@ -305,25 +332,26 @@ async function closeAnnotate(captureId, top) {
   const waited = edited;
   // La vignette de l'historique montre les annotations telles qu'on les laisse.
   const thumb = historyItem(captureId)?.querySelector('.history-thumb');
-  if (waited && thumb) queueThumb(thumb, record, annotationState.items);
+  if (waited && thumb) queueThumb(thumb, record, { items: annotationState.items, trim: annotationState.trim });
   if (waited) await layoutParts().catch((err) => toast(`Mise à jour impossible : ${err.message}`));
   // Une autre capture a pu s'ouvrir pendant le recalcul : le focus appartient alors à ce que la personne vient de choisir.
   if (record?.id !== captureId) return;
-  const index = parts.findLastIndex((part) => part.top <= top);
+  // Un cadrage a pu retirer le point de départ : la première image prend le focus.
+  const index = Math.max(0, parts.findLastIndex((part) => part.top <= top));
   // Après un recalcul (parfois long), le focus revient sans faire défiler la page là où l'on a pu aller entre-temps.
   els.parts.querySelectorAll('figure.part')[index]?.querySelector('.annotate')?.focus({ preventScroll: waited });
 }
 
-// Une écriture à la fois, dans l'ordre. Une écriture qui échoue n'empêche pas la suivante, qui réécrit la liste entière.
-function queueSave(captureId, items) {
+// Une écriture à la fois, dans l'ordre. Une écriture qui échoue n'empêche pas la suivante, qui réécrit tout.
+function queueSave(captureId, edits) {
   pendingSaves++;
   saveQueue = saveQueue.then(async () => {
     try {
-      await saveAnnotations(captureId, items);
+      await saveEdits(captureId, edits);
       // Le bandeau ne part que pour une écriture réussie de la capture dont l'écriture avait échoué.
       if (failedSave?.captureId === captureId) forgetFailedSave();
-      markAnnotated(captureId, items.length > 0);
-      annotationsChannel.postMessage({ captureId, items });
+      markEdited(captureId, edits);
+      annotationsChannel.postMessage({ captureId, items: edits.items, trim: edits.trim });
     } catch (err) {
       console.error(err);
       if (err instanceof CaptureGone) {
@@ -331,7 +359,7 @@ function queueSave(captureId, items) {
         failedSave = null;
         showSaveAlert(SAVE_GONE);
       } else {
-        failedSave = { captureId, items };
+        failedSave = { captureId, edits };
         showSaveAlert(SAVE_FAILED);
       }
     } finally {
@@ -352,17 +380,18 @@ function showSaveAlert(message = '') {
 // Une autre page de résultats a enregistré des annotations. La vignette de cette capture les montre ; si la capture est affichée ici,
 // ses aperçus et ses exports aussi, sinon ils laisseraient voir ce qu'on vient de masquer. Un éditeur ouvert ici est déjà parti de
 // cette liste : il détient le verrou, aucun autre onglet n'écrit plus (voir annotate).
-async function followOtherPage({ captureId, items }) {
+async function followOtherPage({ captureId, items, trim = null }) {
   if (exportControl && record?.id === captureId) {
-    followLater = { captureId, items };
+    followLater = { captureId, items, trim };
     return;
   }
-  markAnnotated(captureId, items.length > 0);
+  const edits = { items, trim };
+  markEdited(captureId, edits);
   const thumb = historyItem(captureId)?.querySelector('.history-thumb');
   const capture = thumb && (await getCapture(captureId));
-  if (capture) queueThumb(thumb, capture, items);
+  if (capture) queueThumb(thumb, capture, edits);
   if (record?.id === captureId && !editing) {
-    setAnnotations(items);
+    setEdits(edits);
     await layoutParts();
   }
 }
@@ -376,14 +405,12 @@ async function layoutParts() {
   els.export.disabled = true;
   els.copyCurrent.disabled = true;
 
-  const split = SPLITS[settings.split];
-  const maxHeight = split.points ? split.points * record.scale : record.crop.h;
   // Tant que les coupes se recalculent, « Annoter » est refusé : l'éditeur recevrait des coupes qui vont changer.
   planning = true;
   setAnnotateEnabled();
   let planned;
   try {
-    planned = await stitcher.planParts(maxHeight, avoidRanges(annotationState.items, record.scale));
+    planned = await planCurrent();
   } finally {
     // Un calcul remplacé par un plus récent laisse la main à celui-ci ; un calcul en échec la rend, pour ne pas bloquer « Annoter ».
     if (token === layoutToken) {
@@ -394,23 +421,25 @@ async function layoutParts() {
   if (token !== layoutToken) return;
   parts = planned;
 
+  const output = stitcher.outputSize();
+  els.meta.lastElementChild.textContent = `${px(output.width)} × ${px(output.height)} px au total`;
   const tallest = Math.max(...parts.map((p) => p.height));
   els.splitHint.textContent =
     parts.length > 1
       ? `${parts.length} images, ${px(tallest)} px de haut au plus.`
-      : `Une seule image de ${px(record.height)} px de haut.`;
+      : `Une seule image de ${px(output.height)} px de haut.`;
   els.downloadAll.textContent = parts.length > 1 ? `Tout télécharger (${parts.length} images)` : 'Télécharger l’image';
   els.downloadAll.disabled = false;
   els.export.disabled = false;
 
-  const canvasWidth = Math.min(record.width, Math.round(PREVIEW_WIDTH * devicePixelRatio));
+  const canvasWidth = Math.min(output.width, Math.round(PREVIEW_WIDTH * devicePixelRatio));
   const canvases = [];
   const nodes = [];
   parts.forEach((part, index) => {
     if (index > 0) nodes.push(cutLine(index));
     const canvas = document.createElement('canvas');
     canvas.width = canvasWidth;
-    canvas.height = Math.max(1, Math.round((part.height * canvasWidth) / record.width));
+    canvas.height = Math.max(1, Math.round((part.height * canvasWidth) / output.width));
     canvases.push(canvas);
     nodes.push(partCard(index, canvas));
   });
@@ -438,11 +467,12 @@ function setAnnotateEnabled() {
 function partCard(index, canvas) {
   const figure = document.createElement('figure');
   figure.className = 'part';
-  figure.style.maxWidth = `${Math.min(PREVIEW_WIDTH, Math.round(record.width / record.scale))}px`;
+  const { width } = stitcher.outputSize();
+  figure.style.maxWidth = `${Math.min(PREVIEW_WIDTH, Math.round(width / record.scale))}px`;
 
   const caption = document.createElement('figcaption');
   const name = text(parts.length > 1 ? `Image ${index + 1} sur ${parts.length}` : 'Image unique', 'part-name');
-  const size = text(`${px(record.width)} × ${px(parts[index].height)} px`, 'part-size');
+  const size = text(`${px(width)} × ${px(parts[index].height)} px`, 'part-size');
   const actions = document.createElement('span');
   actions.className = 'part-actions';
   const copy = button('Copier', 'ghost', () => copyPart(index, copy));
@@ -775,33 +805,36 @@ function historyEntry(capture) {
   remove.innerHTML = CROSS;
 
   item.append(entry, remove);
-  showMeta(meta, annotatedIds.has(capture.id));
+  showMeta(meta, editKinds.get(capture.id));
   return item;
 }
 
-// La ligne grise : l'hôte seul sur sa ligne (abrégé s'il est long), puis la date. Une capture annotée le dit : c'est ce qui explique
-// qu'elle reste quand l'historique se nettoie. La date et la mention ne se coupent pas en deux ; si elles ne tiennent pas côte à côte,
-// la mention passe à la ligne.
-function showMeta(meta, annotated) {
+// La ligne grise : l'hôte seul sur sa ligne (abrégé s'il est long), puis la date. Une capture annotée ou recadrée le dit : c'est ce qui
+// explique qu'elle reste quand l'historique se nettoie. La date et la mention ne se coupent pas en deux ; si elles ne tiennent pas côte à
+// côte, la mention passe à la ligne.
+function showMeta(meta, kind) {
   const { host, date } = meta.dataset;
-  meta.replaceChildren(text(`${host}, `, 'history-host'), text(annotated ? `${date},` : date, 'history-date'));
-  if (annotated) meta.append(' ', text('annotée', 'history-mark'));
+  const mark = kind?.annotated ? 'annotée' : kind?.trimmed ? 'recadrée' : '';
+  meta.replaceChildren(text(`${host}, `, 'history-host'), text(mark ? `${date},` : date, 'history-date'));
+  if (mark) meta.append(' ', text(mark, 'history-mark'));
 }
 
-// Vignette : le haut de la capture et ses annotations (`items`, lues en base si absent), dessinés comme un aperçu. Un masque y cache
+// Vignette : le haut de l'image recadrée et ses annotations (`edits`, lus en base si absents), dessinés comme un aperçu. Un masque y cache
 // ce qu'il cache dans les images, et l'image d'origine n'est jamais exposée dans la liste : rien à glisser ni à enregistrer.
-function queueThumb(canvas, capture, items) {
-  thumbQueue = thumbQueue.then(() => drawThumb(canvas, capture, items)).catch((err) => console.error(`Vignette non dessinée : ${err.message}`));
+function queueThumb(canvas, capture, edits) {
+  thumbQueue = thumbQueue.then(() => drawThumb(canvas, capture, edits)).catch((err) => console.error(`Vignette non dessinée : ${err.message}`));
 }
 
 async function drawThumb(canvas, capture, known) {
-  const items = known ?? (annotatedIds.has(capture.id) ? await getAnnotations(capture.id) : []);
+  const { items, trim } = known ?? (editKinds.has(capture.id) ? await getEdits(capture.id) : { items: [], trim: null });
   const painter = new Stitcher(capture, {
-    overlay: (ctx, top, height, ratio) => drawAnnotations(ctx, items, capture.scale, top, height, ratio),
+    trim,
+    overlay: (ctx, top, height, ratio, left) => drawAnnotations(ctx, items, capture.scale, top, height, ratio, left),
   });
   canvas.width = Math.round(THUMB.width * devicePixelRatio);
   try {
-    await painter.renderPreview({ top: 0, height: Math.min(capture.height, Math.round((capture.width * THUMB.height) / THUMB.width)) }, canvas);
+    const frame = painter.frame();
+    await painter.renderPreview({ top: frame.y, height: Math.min(frame.h, Math.round((frame.w * THUMB.height) / THUMB.width)) }, canvas);
   } finally {
     painter.dispose();
   }
@@ -811,12 +844,13 @@ function historyItem(id) {
   return els.history.querySelector(`.history-item[data-id="${id}"]`)?.closest('li');
 }
 
-// Une capture devient annotée à sa première annotation, et redevient ordinaire quand on les a toutes effacées.
-function markAnnotated(id, annotated) {
-  if (annotated) annotatedIds.add(id);
-  else annotatedIds.delete(id);
+// Une capture devient annotée à sa première annotation, recadrée à son premier cadrage, et redevient ordinaire quand on a tout effacé.
+function markEdited(id, { items, trim }) {
+  const kind = { annotated: items.length > 0, trimmed: Boolean(trim) };
+  if (kind.annotated || kind.trimmed) editKinds.set(id, kind);
+  else editKinds.delete(id);
   const meta = historyItem(id)?.querySelector('.history-meta');
-  if (meta) showMeta(meta, annotated);
+  if (meta) showMeta(meta, editKinds.get(id));
 }
 
 function markHistory(id) {
@@ -834,7 +868,7 @@ function openFromHistory(id) {
 // Croix « Supprimer » : retire la capture et ses annotations, après confirmation.
 async function removeFromHistory(id) {
   if (editing) return;
-  const warning = annotatedIds.has(id) ? ' et ses annotations' : '';
+  const warning = editKinds.get(id)?.annotated ? ' et ses annotations' : '';
   if (!confirm(`Supprimer cette capture${warning} ? Cette action est définitive.`)) return;
   // Pendant la suppression, « Annoter » est refusé : l'éditeur rouvert sur la capture qui disparaît recréerait ses annotations.
   leaving++;
@@ -874,7 +908,7 @@ function dropFromHistory(id) {
   const neighbour = item.nextElementSibling ?? item.previousElementSibling;
   item.querySelector('.history-thumb').width = 0;
   item.remove();
-  annotatedIds.delete(id);
+  editKinds.delete(id);
   if (!els.history.children.length) renderHistory([]);
   neighbour?.querySelector('.history-item')?.focus();
 }
@@ -894,7 +928,7 @@ function showEmpty(title, message) {
   stitcher?.dispose();
   stitcher = null;
   record = null;
-  annotationState = { items: [] };
+  annotationState = { items: [], trim: null };
   // Un bandeau qui parle des images affichées n'a plus d'objet sur un écran sans image.
   showSaveAlert();
   parts = [];

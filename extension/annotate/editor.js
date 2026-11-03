@@ -1180,8 +1180,8 @@ function updateCopyLabel() {
 
 // Tant que le cadrage n'est pas validé ou que ses coupes se recalculent, les images ne correspondent pas encore à ce qui est affiché.
 function copyReadingPart() {
-  if (session.trimming) session.onRefuse?.('Valide ou annule le cadrage, puis copie l’image.');
-  else if (session.replanning) session.onRefuse?.('Le cadrage se recalcule : réessaie dans un instant.');
+  if (session.trimming) session.onRefuse('Valide ou annule le cadrage, puis copie l’image.');
+  else if (session.replanning) session.onRefuse('Le cadrage se recalcule : réessaie dans un instant.');
   else session.onCopy(readingPart());
 }
 
@@ -1220,7 +1220,7 @@ function queueTrimEdit(task, failure) {
 // Le cadrage a changé : nouvelles coupes, pointillés à jour.
 async function refreshCuts() {
   const current = session;
-  current.parts = (await current.replan?.()) ?? current.parts;
+  current.parts = await current.replan();
   for (const line of els.page.querySelectorAll('.editor-cut')) line.remove();
   els.page.append(...current.parts.slice(1).map((part) => cutLine(part, current.view)));
   updateCopyLabel();
