@@ -2,6 +2,7 @@
 // Le travail se fait à part (convert-worker.js), une image à la fois. Rien n'est gardé après la fermeture de l'onglet.
 
 import { FORMATS } from '../lib/settings.js';
+import { isWritingField, namePasted, pastedFiles } from './paste.js';
 import { buildPdf } from './pdf.js';
 
 const FOLDER = 'Captures/Conversions';
@@ -152,13 +153,15 @@ function options() {
 
 // --- La liste ---
 
-function addFiles(files) {
+// `keepOrder` : un collage garde l'ordre du presse-papiers, le tri par nom placerait `…01-2.png` avant `…01.png`.
+function addFiles(files, { keepOrder = false } = {}) {
   if (!files.length) return;
   if (state.running) {
     toast('Une conversion est en cours : attends la fin ou annule-la pour ajouter des images.');
     return;
   }
-  const added = [...files].sort((a, b) => collator.compare(a.name, b.name)).map(createItem);
+  const ordered = keepOrder ? [...files] : [...files].sort((a, b) => collator.compare(a.name, b.name));
+  const added = ordered.map(createItem);
   state.items.push(...added);
   listChanged();
 }
@@ -612,6 +615,16 @@ window.addEventListener('drop', (event) => {
   event.preventDefault();
   els.drop.classList.remove('over');
   addFiles(event.dataTransfer.files);
+});
+document.addEventListener('paste', (event) => {
+  if (isWritingField(event.target)) return;
+  event.preventDefault();
+  const { files, finderCopy } = pastedFiles(event.clipboardData);
+  if (!files.length || finderCopy) {
+    toast('Pas d’image dans le presse-papiers. Pour un fichier du Finder, glisse-le ici.');
+    return;
+  }
+  addFiles(namePasted(files), { keepOrder: true });
 });
 els.convert.addEventListener('click', start);
 els.cancel.addEventListener('click', cancel);
