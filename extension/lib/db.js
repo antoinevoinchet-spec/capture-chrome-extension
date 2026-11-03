@@ -65,7 +65,7 @@ export async function listCaptures() {
   return all.sort(newestFirst);
 }
 
-// Garde les `keep` captures non annotées les plus récentes ; une capture annotée n'est jamais supprimée ici, ni une capture de la
+// Garde les `keep` captures non annotées les plus récentes ; une capture annotée ou recadrée n'est jamais supprimée ici, ni une capture de la
 // liste `spared` (celles affichées à l'écran, qu'on peut encore annoter).
 // Lecture et suppressions dans une seule transaction : une annotation enregistrée entre-temps est vue.
 export async function pruneCaptures(keep, spared = []) {
@@ -86,28 +86,42 @@ export async function getAnnotations(captureId) {
   return entry?.items ?? [];
 }
 
-// Remplace toute la liste. Une liste vide supprime l'entrée : la capture redevient une capture ordinaire.
+// Annotations et cadrage d'une capture. Une entrée d'avant le recadrage n'a pas de `trim` : il vaut null.
+export async function getEdits(captureId) {
+  const entry = await onStore(ANNOTATIONS, 'readonly', (store) => store.get(captureId));
+  return { items: entry?.items ?? [], trim: entry?.trim ?? null };
+}
+
+// Une seule écriture pour la liste et le cadrage : `nextOf(entrée actuelle)` rend { items, trim }. Sans annotation ni cadrage, l'entrée
+// est supprimée : la capture redevient une capture ordinaire.
 // Une capture qui n'existe plus ne reçoit rien et ne revient pas : l'écriture échoue avec CaptureGone.
-export async function saveAnnotations(captureId, items) {
+async function writeEdits(captureId, nextOf) {
   let failure = null;
   const write = request([CAPTURES, ANNOTATIONS], 'readwrite', (tx) => {
     const annotations = tx.objectStore(ANNOTATIONS);
-    if (!items.length) return annotations.delete(captureId);
-    const found = tx.objectStore(CAPTURES).getKey(captureId);
-    found.onsuccess = () => {
-      if (found.result === undefined) {
-        failure = new CaptureGone();
+    const stored = annotations.get(captureId);
+    stored.onsuccess = () => {
+      const { items, trim } = nextOf(stored.result);
+      if (!items.length && !trim) {
+        annotations.delete(captureId);
         return;
       }
-      try {
-        annotations.put({ captureId, items, updatedAt: Date.now() });
-      } catch (err) {
-        // Levée dans ce rappel, l'erreur serait perdue : la transaction s'annulerait sans dire pourquoi.
-        failure = err;
-        tx.abort();
-      }
+      const found = tx.objectStore(CAPTURES).getKey(captureId);
+      found.onsuccess = () => {
+        if (found.result === undefined) {
+          failure = new CaptureGone();
+          return;
+        }
+        try {
+          annotations.put({ captureId, items, ...(trim && { trim }), updatedAt: Date.now() });
+        } catch (err) {
+          // Levée dans ce rappel, l'erreur serait perdue : la transaction s'annulerait sans dire pourquoi.
+          failure = err;
+          tx.abort();
+        }
+      };
     };
-    return found;
+    return stored;
   });
   await write.catch((err) => {
     if (!failure) throw err;
@@ -115,7 +129,17 @@ export async function saveAnnotations(captureId, items) {
   if (failure) throw failure;
 }
 
-// Ids des captures qui portent au moins une annotation.
+// Remplace toute la liste et garde le cadrage. Une liste vide, sans cadrage, supprime l'entrée.
+export function saveAnnotations(captureId, items) {
+  return writeEdits(captureId, (entry) => ({ items, trim: entry?.trim ?? null }));
+}
+
+// Remplace la liste et le cadrage ensemble.
+export function saveEdits(captureId, { items, trim }) {
+  return writeEdits(captureId, () => ({ items, trim: trim ?? null }));
+}
+
+// Ids des captures qui portent au moins une annotation ou un cadrage.
 export async function listAnnotatedIds() {
   return new Set(await onStore(ANNOTATIONS, 'readonly', (store) => store.getAllKeys()));
 }
