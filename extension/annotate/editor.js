@@ -202,6 +202,7 @@ async function closeEditor() {
   // Un cadre en cours de réglage n'est pas validé : il est abandonné.
   ended.trimming = null;
   els.tools.inert = false;
+  if (ended.replanning) ended.onRefuse('Le cadrage se recalcule : l’éditeur se ferme dans un instant.');
   commitText();
   await ended.queue;
   window.removeEventListener('beforeunload', onBeforeUnload);

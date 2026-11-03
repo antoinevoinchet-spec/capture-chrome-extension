@@ -46,6 +46,12 @@ function frameOf({ width, height }, trim) {
   return w >= 1 && h >= 1 ? { x, y, w, h } : whole;
 }
 
+// Filet : une partie calculée avant un changement de cadrage ne sort jamais du cadre.
+function withinFrame(part, frame) {
+  const top = Math.max(part.top, frame.y);
+  return { top, height: Math.min(part.top + part.height, frame.y + frame.h) - top };
+}
+
 export class Stitcher {
   // overlay(ctx, top, height, ratio, left) dessine la surimpression (les annotations) après la capture ;
   // ctx est positionné en (0, 0) = point (`left`, `top`) de la capture, à l'échelle `ratio`.
@@ -183,9 +189,7 @@ export class Stitcher {
   renderPart(part, type = 'image/png', quality = 0.92) {
     return this.enqueue(async () => {
       const frame = this.frame();
-      // Filet : une partie calculée avant un changement de cadrage ne sort jamais du cadre.
-      const top = Math.max(part.top, frame.y);
-      const height = Math.min(part.top + part.height, frame.y + frame.h) - top;
+      const { top, height } = withinFrame(part, frame);
       if (height < 1) throw new Error('cette image est hors du cadre');
       // Canvas neuf, à la taille du cadre : ce qui est hors cadre n'y entre pas.
       const canvas = new OffscreenCanvas(frame.w, height);
@@ -217,25 +221,27 @@ export class Stitcher {
   renderPreview(part, canvas, { overlay = true, full = false } = {}) {
     return this.enqueue(async () => {
       const frame = full ? frameOf(this.record, null) : this.frame();
+      const { top, height } = withinFrame(part, frame);
+      if (height < 1) return;
       const ratio = canvas.width / frame.w;
-      const buffer = new OffscreenCanvas(canvas.width, Math.max(1, Math.round(part.height * ratio)));
+      const buffer = new OffscreenCanvas(canvas.width, Math.max(1, Math.round(height * ratio)));
       const ctx = buffer.getContext('2d');
       ctx.imageSmoothingQuality = 'high';
       if (frame.w === this.record.width && frame.h === this.record.height) {
         ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-        await this.draw(ctx, part.top, part.height);
+        await this.draw(ctx, top, height);
       } else {
         // Réduite directement, la capture mêlerait au bord du cadre un peu de ce qui est à l'extérieur : le cadre passe d'abord par un canvas
         // en pleine définition, où l'extérieur n'existe pas.
-        const exact = new OffscreenCanvas(frame.w, part.height);
+        const exact = new OffscreenCanvas(frame.w, height);
         const exactCtx = exact.getContext('2d');
         exactCtx.translate(-frame.x, 0);
-        await this.draw(exactCtx, part.top, part.height);
+        await this.draw(exactCtx, top, height);
         ctx.drawImage(exact, 0, 0, buffer.width, buffer.height);
         exact.width = exact.height = 0;
         ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       }
-      if (overlay) await this.overlay?.(ctx, part.top, part.height, ratio, frame.x);
+      if (overlay) await this.overlay?.(ctx, top, height, ratio, frame.x);
       canvas.height = buffer.height;
       canvas.getContext('2d').drawImage(buffer, 0, 0);
     });

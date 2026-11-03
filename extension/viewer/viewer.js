@@ -14,8 +14,11 @@ const DOWNLOAD_FOLDER = 'Captures';
 // Taille d'une vignette de l'historique, en points (voir .history-thumb dans viewer.css).
 const THUMB = { width: 40, height: 52 };
 
-const SAVE_FAILED = 'L’enregistrement a échoué : tes dernières annotations ne sont pas sauvegardées. Elles le seront à la prochaine modification.';
-const SAVE_GONE = 'Cette capture a été supprimée dans un autre onglet : tes annotations ne sont plus enregistrées. Copie ou télécharge l’image maintenant.';
+// Avec un cadrage, ce qui n'est pas écrit n'est pas seulement une annotation.
+const changesOf = ({ trim }) => (trim ? 'modifications' : 'annotations');
+const SAVE_FAILED = (edits) => `L’enregistrement a échoué : tes dernières ${changesOf(edits)} ne sont pas sauvegardées. Elles le seront à la prochaine modification.`;
+const SAVE_GONE = (edits) => `Cette capture a été supprimée dans un autre onglet : tes ${changesOf(edits)} ne sont plus enregistrées. Copie ou télécharge l’image maintenant.`;
+const TRIM_MOVED = 'le cadrage a changé dans un autre onglet';
 const EDITOR_TAKEN = 'Cette capture est déjà en cours d’annotation dans un autre onglet. Ferme son éditeur, puis réessaie.';
 
 const CHECK =
@@ -85,6 +88,8 @@ let leaving = 0;
 // Un export est en cours : son AbortController, et le dernier message d'un autre onglet, appliqué seulement à la fin (l'export reste figé).
 let exportControl = null;
 let followLater = null;
+// Pendant cet export, le cadrage a changé ailleurs : son fichier garderait ce qui vient d'être retiré.
+let exportStale = false;
 // Vignettes de l'historique, dessinées l'une après l'autre.
 let thumbQueue = Promise.resolve();
 // Prévient les autres pages de résultats ouvertes quand des annotations sont enregistrées.
@@ -192,10 +197,12 @@ async function confirmLeaving() {
   try {
     await saveEdits(captureId, edits);
     markEdited(captureId, edits);
+    // Un autre onglet ouvert sur cette capture montre encore ce que cette écriture remplace.
+    annotationsChannel.postMessage({ captureId, items: edits.items, trim: edits.trim });
   } catch (err) {
     console.error(err);
     // Supprimée entre-temps : plus rien à retenter, ni à demander.
-    if (!(err instanceof CaptureGone) && !confirm('L’enregistrement a encore échoué : les dernières annotations de cette capture seront perdues si tu la quittes. Quitter quand même ?')) return false;
+    if (!(err instanceof CaptureGone) && !confirm(`L’enregistrement a encore échoué : les dernières ${changesOf(edits)} de cette capture seront perdues si tu la quittes. Quitter quand même ?`)) return false;
   }
   forgetFailedSave();
   return true;
@@ -225,6 +232,10 @@ function planCurrent() {
 // l'un l'autre sans prévenir, et un masque pourrait disparaître. Chrome libère de lui-même le verrou d'un onglet qui se ferme.
 function annotate(index) {
   if (!parts[index] || editing || locking || planning || leaving || exportControl) return;
+  if (busy) {
+    toast('Un téléchargement est en cours : attends la fin, puis annote l’image.');
+    return;
+  }
   const captureId = record.id;
   const top = parts[index].top;
   // Verrou encore détenu (écriture ratée ou en cours) : cette page garde la main sans le redemander.
@@ -287,9 +298,12 @@ async function editUnderLock(captureId, top) {
     trim: annotationState.trim,
     startTop: top,
     onChange: (edits) => {
+      const framed = JSON.stringify(edits.trim) === JSON.stringify(annotationState.trim);
       edited = true;
       setEdits(edits);
       queueSave(captureId, edits);
+      // Les aperçus, derrière l'éditeur, montrent l'ancien cadre : ils partent, et sont refaits à la fermeture.
+      if (!framed) els.parts.replaceChildren();
     },
     onCopy: (partIndex) => copyPart(partIndex, null),
     onClose: () => closeAnnotate(captureId, top),
@@ -357,10 +371,10 @@ function queueSave(captureId, edits) {
       if (err instanceof CaptureGone) {
         // Plus rien à retenter : on le dit, et les images affichées restent copiables.
         failedSave = null;
-        showSaveAlert(SAVE_GONE);
+        showSaveAlert(SAVE_GONE(edits));
       } else {
         failedSave = { captureId, edits };
-        showSaveAlert(SAVE_FAILED);
+        showSaveAlert(SAVE_FAILED(edits));
       }
     } finally {
       pendingSaves--;
@@ -383,6 +397,11 @@ function showSaveAlert(message = '') {
 async function followOtherPage({ captureId, items, trim = null }) {
   if (exportControl && record?.id === captureId) {
     followLater = { captureId, items, trim };
+    // L'export reste figé pour les annotations. Pour un cadrage, il s'arrête : son fichier contiendrait ce qui vient d'être retiré.
+    if (JSON.stringify(trim) !== JSON.stringify(annotationState.trim)) {
+      exportStale = true;
+      exportControl.abort();
+    }
     return;
   }
   const edits = { items, trim };
@@ -449,8 +468,9 @@ async function layoutParts() {
   els.copyCurrent.disabled = false;
   updateCurrent();
 
-  for (let i = 0; i < parts.length; i++) {
-    await stitcher.renderPreview(parts[i], canvases[i]);
+  // `planned`, pas `parts` : l'éditeur, ouvert pendant ce dessin, peut remplacer `parts` en changeant le cadrage.
+  for (let i = 0; i < planned.length; i++) {
+    await stitcher.renderPreview(planned[i], canvases[i]);
     if (token !== layoutToken) return;
   }
   els.parts.removeAttribute('aria-busy');
@@ -507,12 +527,19 @@ async function downloadParts(indices, trigger) {
   const format = FORMATS[settings.format];
   const label = trigger?.textContent;
   if (trigger) trigger.disabled = true;
+  // Copies locales : les coupes peuvent changer en cours de route, sur un message d'un autre onglet. Avec un autre cadrage, la série s'arrête :
+  // ses images ne se raccorderaient plus.
+  const painter = stitcher;
+  const state = annotationState;
+  const startTrim = JSON.stringify(state.trim);
+  const chosen = indices.map((index) => ({ part: parts[index], name: fileName(index, format.ext) }));
   let lastId;
   try {
-    for (const [n, index] of indices.entries()) {
+    for (const [n, { part, name }] of chosen.entries()) {
+      if (JSON.stringify(state.trim) !== startTrim) throw new Error(`${TRIM_MOVED}. Relance le téléchargement.`);
       if (trigger) trigger.textContent = indices.length > 1 ? `Préparation ${n + 1} sur ${indices.length}…` : 'Préparation…';
-      const blob = await stitcher.renderPart(parts[index], format.type);
-      lastId = await saveBlob(blob, fileName(index, format.ext));
+      const blob = await painter.renderPart(part, format.type);
+      lastId = await saveBlob(blob, name);
     }
     const where = parts.length > 1 ? `Téléchargements › ${DOWNLOAD_FOLDER} › ${baseName()}` : `Téléchargements › ${DOWNLOAD_FOLDER}`;
     toast(indices.length > 1 ? `${indices.length} images enregistrées dans ${where}.` : `Image enregistrée dans ${where}.`, {
@@ -621,12 +648,19 @@ async function startExport(kind) {
       toast(`${label} non enregistré : ${problem}`, { lasting: true });
       return;
     }
+    // Trop tard pour l'arrêter : le fichier s'écrivait déjà.
+    if (exportStale) {
+      toast(`${label} enregistré avec l’ancien cadrage : ${TRIM_MOVED} pendant l’écriture. Relance l’export.`, { lasting: true });
+      return;
+    }
     toast(`${label} enregistré dans Téléchargements › ${DOWNLOAD_FOLDER} › ${frozen.base}.`, {
       success: true,
       action: { label: 'Afficher dans le Finder', run: () => chrome.downloads.show(id) },
     });
   } catch (err) {
-    if (control.signal.aborted) {
+    if (exportStale) {
+      toast(`Export arrêté : ${TRIM_MOVED}. Aucun fichier créé, relance l’export.`, { lasting: true });
+    } else if (control.signal.aborted) {
       toast('Export annulé : aucun fichier créé.');
     } else if (err instanceof ZipTooBig) {
       toast('Ce zip dépasserait la limite de 4 Go ou 65 535 images : aucun fichier créé. Choisis le format JPG, ou exporte en PDF.', { lasting: true });
@@ -636,6 +670,7 @@ async function startExport(kind) {
     }
   } finally {
     const hadFocus = document.activeElement === els.exportCancel || document.activeElement === document.body;
+    exportStale = false;
     setExporting(null);
     if (hadFocus) els.export.focus();
     if (followLater) {
@@ -649,6 +684,11 @@ async function startExport(kind) {
 // Toutes les façons de copier (boutons, clic droit, ⌘C) passent par ici : pleine résolution et notification.
 async function copyPart(index, trigger) {
   if (copying || !parts[index]) return;
+  // Un changement venu d'un autre onglet attend la fin de l'export : l'image affichée n'est plus la bonne.
+  if (followLater) {
+    toast('Cette capture a changé dans un autre onglet : attends la fin de l’export, puis copie l’image.');
+    return;
+  }
   copying = true;
   const label = trigger?.textContent;
   if (trigger) {

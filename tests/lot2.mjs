@@ -1,6 +1,6 @@
 // Tests du lot 2 : le recadrage. Stockage du cadrage, rendu de l'image recadrée, bouton « Recadrer », tous les chemins d'export.
 // Même Chromium et même extension que les autres suites (écran ×2).
-// Usage : node lot2.mjs <dossier de sortie> [stockage|rendu|bouton|chemins] [motif]
+// Usage : node lot2.mjs <dossier de sortie> [stockage|rendu|bouton|chemins|relecture] [motif]
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -831,7 +831,7 @@ async function copied(viewer, act) {
   await viewer.waitForFunction(
     () => {
       const toast = document.getElementById('toast');
-      return !toast.hidden && /presse-papiers|impossible|recalcule|Valide/.test(toast.textContent);
+      return !toast.hidden && /presse-papiers|impossible|recalcule|Valide|autre onglet/.test(toast.textContent);
     },
     null,
     { timeout: 60_000 },
@@ -1436,6 +1436,271 @@ async function groupChemins(context) {
   }
 }
 
+// --- Écarts trouvés par le relecteur neuf ---
+
+// Ralentit une méthode de Stitcher dans la page (rendu, coupes) : laisse le temps d'agir pendant qu'elle travaille.
+const slowDown = (viewer, method, ms) =>
+  viewer.evaluate(
+    async ({ method, ms }) => {
+      const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+      const real = Stitcher.prototype[method];
+      Stitcher.prototype[method] = function (...args) {
+        return new Promise((resolve) => setTimeout(resolve, ms)).then(() => real.apply(this, args));
+      };
+    },
+    { method, ms },
+  );
+const toastSays = (viewer, pattern) =>
+  viewer.waitForFunction(
+    (source) => {
+      const toast = document.getElementById('toast');
+      return !toast.hidden && new RegExp(source).test(toast.textContent);
+    },
+    pattern,
+    { timeout: 20_000 },
+  );
+const greenishPixels = (canvas) => {
+  const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+  let greenish = 0;
+  for (let i = 0; i < data.length; i += 4) if (data[i + 1] > data[i] + 12 && data[i + 1] > data[i + 2] + 12) greenish++;
+  return greenish;
+};
+const thumbGreen = (viewer, id) =>
+  viewer.evaluate(`(${greenishPixels})(document.querySelector('.history-item[data-id="${id}"] .history-thumb'))`);
+const announce = (page, message) => page.evaluate((message) => new BroadcastChannel('capture-annotations').postMessage(message), message);
+
+async function groupRelecture(context) {
+  console.log('\n— Écarts trouvés par le relecteur neuf');
+  const home = await extensionPage(context, 'viewer/viewer.html');
+  await home.waitForSelector('body[data-ready="true"]');
+  await resetDb(home);
+  const scale = 2;
+  const trim = frameFor(scale);
+  const framedText = `${trim.x},${trim.y},${trim.w},${trim.h}`;
+  try {
+    await test('relecture : changer le nombre d’images pendant le dessin des aperçus ne casse rien', async () => {
+      const other = await seedCapture(home, { heightPoints: 300 });
+      const long = await seedCapture(home, { heightPoints: 3000 });
+      await putEdits(home, long, { items: [], trim: { x: 0, y: 0, w: 2560, h: 2500 } });
+      return withViewer(context, other, async (viewer) => {
+        await onScreenSplit(viewer);
+        await slowDown(viewer, 'renderPreview', 500);
+        await viewer.locator(`.history-item[data-id="${long}"]`).click();
+        await viewer.waitForFunction(() => document.querySelectorAll('figure.part .annotate:not(:disabled)').length === 2, null, { timeout: 15_000 });
+        await annotateButton(viewer).click();
+        await viewer.waitForSelector('#editor:not([hidden])');
+        await viewer.locator('#editor-trim-reset').click();
+        await waitTrim(viewer, '');
+        await viewer.waitForFunction(() => document.querySelectorAll('.editor-cut').length > 1, null, { timeout: 20_000 });
+        await viewer.waitForTimeout(1500);
+        await drawArrow(viewer);
+        const stored = await storedWhen(home, long, (edits) => edits.items.length === 1);
+        await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+        await viewer.waitForSelector('#editor', { state: 'hidden', timeout: 30_000 });
+        await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+        const title = await viewer.locator('#parts h2').count();
+        const count = await viewer.locator('figure.part').count();
+        await backToMedium(viewer);
+        return { ok: stored.items.length === 1 && stored.trim === null && title === 0 && count > 2, detail: `${stored.items.length} annotation, ${count} images, écran d’erreur : ${title}` };
+      });
+    });
+
+    await test('relecture : écriture ratée puis rattrapée, le cadrage est écrit, le bandeau le dit et le deuxième onglet l’apprend', async () => {
+      const target = await seedSentinel(home, scale);
+      const elsewhere = await seedCapture(home, { heightPoints: 300 });
+      return withViewer(context, target, async (first) => {
+        const second = await extensionPage(context, `viewer/viewer.html?id=${target}`);
+        try {
+          await second.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+          await first.bringToFront();
+          await first.evaluate(() => {
+            window.realPut = IDBObjectStore.prototype.put;
+            IDBObjectStore.prototype.put = () => {
+              throw new DOMException('Écriture impossible (test).', 'QuotaExceededError');
+            };
+          });
+          await annotateButton(first).click();
+          await editorReady(first);
+          await setSentinelFrame(first);
+          await first.keyboard.press('Enter');
+          await waitTrim(first, framedText);
+          await first.waitForFunction(() => !document.getElementById('editor-alert').hidden, null, { timeout: 10_000 });
+          const banner = await first.locator('#editor-alert').innerText();
+          await finishEditor(first);
+          await first.evaluate(() => (IDBObjectStore.prototype.put = window.realPut));
+          await first.locator(`.history-item[data-id="${elsewhere}"]`).click();
+          const stored = await storedWhen(home, target, (edits) => edits.trim);
+          await second.bringToFront();
+          await second.waitForFunction((w) => document.querySelector('figure.part .part-size')?.textContent.replace(/\D/g, '').startsWith(String(w)), trim.w, { timeout: 15_000 }).catch(() => null);
+          const [[width]] = await partSizes(second);
+          return { ok: same(stored.trim, trim) && width === trim.w && /modifications/.test(banner), detail: `${JSON.stringify(stored.trim)} ; deuxième onglet ${width} px ; « ${banner.slice(0, 70)} »` };
+        } finally {
+          await second.close();
+        }
+      });
+    });
+
+    await test('relecture : un cadrage validé ailleurs pendant un export l’arrête, sans fichier, et la copie ne rend pas l’ancien cadre', async () => {
+      const target = await seedSentinel(home, scale);
+      return withViewer(context, target, async (viewer) => {
+        await onScreenSplit(viewer);
+        await context.serviceWorkers()[0].evaluate(() => chrome.downloads.erase({}));
+        await slowDown(viewer, 'renderPart', 1500);
+        await viewer.locator('#export').click();
+        await viewer.locator('#export-menu [data-export="pdf"]').click();
+        await viewer.waitForFunction(() => /Partie 1/.test(document.getElementById('export-progress').textContent));
+        await putEdits(home, target, { items: [], trim });
+        await announce(home, { captureId: target, items: [], trim });
+        await viewer.waitForTimeout(100);
+        const refused = await copied(viewer, () => viewer.keyboard.press('Meta+c'));
+        await toastSays(viewer, 'cadrage a changé');
+        const message = await viewer.locator('#toast').innerText();
+        await viewer.waitForFunction((w) => document.querySelector('figure.part .part-size')?.textContent.replace(/\D/g, '').startsWith(String(w)), trim.w, { timeout: 30_000 });
+        const files = await context.serviceWorkers()[0].evaluate(async () => (await chrome.downloads.search({})).length);
+        await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+        await backToMedium(viewer);
+        return { ok: /autre onglet/.test(refused.refused ?? '') && files === 0, detail: `copie : ${refused.refused ?? 'rendue'} ; ${files} fichier ; « ${message.slice(0, 80)} »` };
+      });
+    });
+
+    await test('relecture : pendant « Tout télécharger », Annoter est refusé, et un cadrage validé ailleurs arrête la série', async () => {
+      const target = await seedSentinel(home, scale);
+      return withViewer(context, target, async (viewer) => {
+        await onScreenSplit(viewer);
+        await context.serviceWorkers()[0].evaluate(() => chrome.downloads.erase({}));
+        await slowDown(viewer, 'renderPart', 1500);
+        await viewer.locator('#download-all').click();
+        await annotateButton(viewer).click();
+        await toastSays(viewer, 'téléchargement est en cours');
+        const editorOpen = await viewer.locator('#editor').isVisible();
+        await putEdits(home, target, { items: [], trim });
+        await announce(home, { captureId: target, items: [], trim });
+        await toastSays(viewer, 'cadrage a changé');
+        const files = await context.serviceWorkers()[0].evaluate(async () => (await chrome.downloads.search({})).length);
+        await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+        await backToMedium(viewer);
+        return { ok: !editorOpen && files < 2, detail: `éditeur ouvert : ${editorOpen}, ${files} fichier sur 2` };
+      });
+    });
+
+    await test('relecture : un recalcul des coupes qui échoue le dit, et la copie reste bornée au cadre', async () => {
+      const target = await seedSentinel(home, scale);
+      return withViewer(context, target, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await viewer.evaluate(async () => {
+          const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+          const real = Stitcher.prototype.planParts;
+          Stitcher.prototype.planParts = function (...args) {
+            Stitcher.prototype.planParts = real;
+            return Promise.reject(new Error('panne de test'));
+          };
+        });
+        await setSentinelFrame(viewer);
+        await viewer.keyboard.press('Enter');
+        await toastSays(viewer, 'pas pu être recalculées');
+        const info = await copied(viewer, () => viewer.locator('#editor-copy').click());
+        const stored = await storedWhen(home, target, (edits) => edits.trim);
+        await finishEditor(viewer);
+        const [[width, height]] = await partSizes(viewer);
+        return { ok: info.width === trim.w && info.sentinel === 0 && same(stored.trim, trim) && width === trim.w && height === trim.h, detail: `copie ${info.width} × ${info.height}, sentinelle ${info.sentinel} ; page ${width} × ${height}` };
+      });
+    });
+
+    await test('relecture : dans la page, une annotation à cheval sur un cadre à gauche non nul est à sa place', async () => {
+      const target = await seedSentinel(home, scale);
+      const mask = { id: 'm9', type: 'mask', fill: '#ff0000', x: trim.x - 50, y: trim.y + 100, width: 100, height: 60 };
+      await putEdits(home, target, { items: [mask], trim });
+      return withViewer(context, target, async (viewer) => {
+        const info = await copied(viewer, () => viewer.locator('#copy-current').click());
+        const probes = await viewer.evaluate(async () => {
+          const blob = await (await navigator.clipboard.read())[0].getType('image/png');
+          const bitmap = await createImageBitmap(blob);
+          const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
+          ctx.drawImage(bitmap, 0, 0);
+          return [[10, 130], [45, 130], [60, 130]].map(([x, y]) => [...ctx.getImageData(x, y, 1, 1).data].slice(0, 3));
+        });
+        const reddish = ([r, g, b]) => r > 150 && g < 90 && b < 90;
+        return { ok: info.sentinel === 0 && reddish(probes[0]) && reddish(probes[1]) && near(probes[2], WHITE), detail: JSON.stringify(probes) };
+      });
+    });
+
+    await test('relecture : la vignette suit le cadrage à la fermeture de l’éditeur et dans un autre onglet', async () => {
+      const target = await seedSentinel(home, scale);
+      return withViewer(context, target, async (first) => {
+        const second = await extensionPage(context, `viewer/viewer.html?id=${target}`);
+        try {
+          await second.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+          await first.bringToFront();
+          const drawn = (viewer) => viewer.waitForFunction((id) => document.querySelector(`.history-item[data-id="${id}"] .history-thumb`)?.getContext('2d').getImageData(10, 10, 1, 1).data[3] > 0, target, { timeout: 15_000 });
+          await drawn(first);
+          await drawn(second);
+          const before = await thumbGreen(first, target);
+          await annotateButton(first).click();
+          await editorReady(first);
+          await setSentinelFrame(first);
+          await first.keyboard.press('Enter');
+          await waitTrim(first, framedText);
+          await finishEditor(first);
+          await first.waitForFunction(`(${greenishPixels})(document.querySelector('.history-item[data-id="${target}"] .history-thumb')) === 0`, null, { timeout: 15_000 });
+          const after = await thumbGreen(first, target);
+          await second.bringToFront();
+          await second.waitForFunction(`(${greenishPixels})(document.querySelector('.history-item[data-id="${target}"] .history-thumb')) === 0`, null, { timeout: 15_000 });
+          const elsewhere = await thumbGreen(second, target);
+          return { ok: before > 0 && after === 0 && elsewhere === 0, detail: `pixels verts ${before} → ${after}, autre onglet ${elsewhere}` };
+        } finally {
+          await second.close();
+        }
+      });
+    });
+
+    await test('relecture : « Terminer » pendant le recalcul le dit, et l’ancien aperçu ne reste pas à l’écran', async () => {
+      const target = await seedSentinel(home, scale);
+      return withViewer(context, target, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await slowDown(viewer, 'planParts', 1500);
+        await setSentinelFrame(viewer);
+        await viewer.keyboard.press('Enter');
+        await viewer.waitForTimeout(100);
+        await viewer.evaluate(() => (document.getElementById('toast').hidden = true));
+        await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+        await toastSays(viewer, 'se ferme dans un instant');
+        await viewer.waitForSelector('#editor', { state: 'hidden', timeout: 20_000 });
+        const during = await viewer.evaluate(`[...document.querySelectorAll('.sheet canvas')].map(${greenishPixels})`);
+        await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+        const after = await viewer.evaluate(`[...document.querySelectorAll('.sheet canvas')].map(${greenishPixels})`);
+        return { ok: during.every((count) => count === 0) && after.length === 1 && after[0] === 0, detail: `pendant ${JSON.stringify(during)}, après ${JSON.stringify(after)}` };
+      });
+    });
+
+    await test('relecture : un aperçu demandé pour une partie périmée reste borné au cadre', async () => {
+      const target = await seedSentinel(home, scale);
+      return withViewer(context, target, async (viewer) => {
+        const got = await viewer.evaluate(
+          async ({ id, trim }) => {
+            const { getCapture } = await import(chrome.runtime.getURL('lib/db.js'));
+            const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+            const stitcher = new Stitcher(await getCapture(id), { trim });
+            const canvas = document.createElement('canvas');
+            canvas.width = 300;
+            await stitcher.renderPreview({ top: 0, height: 3000 }, canvas);
+            const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+            let greenish = 0;
+            for (let i = 0; i < data.length; i += 4) if (data[i + 1] > data[i] + 12 && data[i + 1] > data[i + 2] + 12) greenish++;
+            stitcher.dispose();
+            return { greenish, height: canvas.height };
+          },
+          { id: target, trim },
+        );
+        return { ok: got.greenish === 0 && got.height === Math.round((trim.h * 300) / trim.w), detail: JSON.stringify(got) };
+      });
+    });
+  } finally {
+    await home.close();
+  }
+}
+
 async function main() {
   await fs.rm(WORK, { recursive: true, force: true });
   await fs.mkdir(WORK, { recursive: true });
@@ -1448,7 +1713,7 @@ async function main() {
   const context = await launch(extension, 'profile', WORK);
   try {
     context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
-    const groups = { stockage: groupStockage, rendu: groupRendu, bouton: groupBouton, chemins: groupChemins };
+    const groups = { stockage: groupStockage, rendu: groupRendu, bouton: groupBouton, chemins: groupChemins, relecture: groupRelecture };
     for (const [name, group] of Object.entries(groups)) {
       if (ONLY && ONLY !== name) continue;
       await group(context);
