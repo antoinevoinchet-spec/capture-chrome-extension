@@ -10,9 +10,12 @@ const els = {
   shortcutHint: document.getElementById('shortcut-hint'),
   shortcutHintText: document.getElementById('shortcut-hint-text'),
   setShortcut: document.getElementById('set-shortcut'),
+  version: document.getElementById('version'),
 };
 
 const COMMAND_LABELS = { 'capture-full': '« Page entière »', 'capture-visible': '« Partie visible »' };
+
+els.version.textContent = `Version ${chrome.runtime.getManifest().version}`;
 
 const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 

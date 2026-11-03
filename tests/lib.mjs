@@ -29,11 +29,20 @@ export function check(name, ok, detail = '') {
   console.log(`${ok ? 'OK  ' : 'ÉCHEC'} ${name}${detail ? `  [${detail}]` : ''}`);
 }
 
+// Ce que le vrai manifeste doit dire à ce lot. Mis à jour en même temps que lui : les suites de tous les lots le lisent.
+export const MANIFEST_EXPECTED = {
+  version: '0.2.0',
+  permissions: ['activeTab', 'scripting', 'downloads', 'storage'],
+  optional_host_permissions: undefined,
+};
+
 // Copie de test : ajoute <all_urls> pour lancer la capture sans cliquer sur l'icône,
 // et la lecture du presse-papiers pour vérifier « Copier ».
-export async function prepareExtension(work) {
-  const dir = path.join(work, 'extension');
+// `allHosts: false` : copie sans ces deux ajouts, qui masqueraient une permission manquante.
+export async function prepareExtension(work, { allHosts = true } = {}) {
+  const dir = path.join(work, allHosts ? 'extension' : 'extension-sans-hotes');
   await fs.cp(EXTENSION, dir, { recursive: true });
+  if (!allHosts) return dir;
   const manifestPath = path.join(dir, 'manifest.json');
   const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
   manifest.host_permissions = ['<all_urls>'];
