@@ -452,6 +452,349 @@ async function groupRendu(context) {
   }
 }
 
+// --- Le bouton « Recadrer » ---
+
+const annotateButton = (viewer, index = 0) => viewer.locator('figure.part').nth(index).getByRole('button', { name: 'Annoter', exact: true });
+const editorReady = (viewer) => viewer.waitForSelector('#editor[data-ready="true"]', { timeout: 30_000 });
+const trimButton = (viewer) => viewer.locator('#editor-trim');
+const handle = (viewer, edge) => viewer.locator(`#editor-trim-box [data-edge="${edge}"]`);
+const asRect = (text) => {
+  if (!text) return null;
+  const [x, y, w, h] = text.split(',').map(Number);
+  return { x, y, w, h };
+};
+// Le rectangle en cours de réglage, et le cadrage validé.
+const rectOf = async (viewer) => asRect(await viewer.locator('#editor-trim-layer').getAttribute('data-rect'));
+const trimOf = async (viewer) => asRect(await viewer.locator('#editor-trim-layer').getAttribute('data-trim'));
+const waitTrim = (viewer, text) => viewer.waitForFunction((text) => document.getElementById('editor-trim-layer').dataset.trim === text, text, { timeout: 15_000 });
+const scaleOf = (viewer) => viewer.evaluate(() => Number(document.getElementById('editor').dataset.scale));
+
+// Ouvre la page de résultats sur la capture `id` ; toute erreur de page fait échouer.
+async function withViewer(context, id, run) {
+  const viewer = await extensionPage(context, `viewer/viewer.html?id=${id}`);
+  const errors = [];
+  viewer.on('pageerror', (err) => errors.push(err.message));
+  try {
+    await viewer.bringToFront();
+    await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+    const outcome = await run(viewer);
+    if (errors.length) throw new Error(`erreur dans la page : ${errors[0]}`);
+    return outcome;
+  } finally {
+    await viewer.close();
+  }
+}
+
+async function inEditor(context, id, run) {
+  return withViewer(context, id, async (viewer) => {
+    await annotateButton(viewer).click();
+    await editorReady(viewer);
+    return run(viewer);
+  });
+}
+
+// Entre dans le mode recadrage : le premier arrêt du clavier est la poignée du haut.
+async function startTrim(viewer) {
+  await trimButton(viewer).click();
+  await viewer.waitForSelector('#editor-trim-box [data-edge="n"]');
+}
+
+// Tire le centre d'un élément de (dx, dy) points d'écran.
+async function dragBy(viewer, locator, dx, dy) {
+  // Une poignée peut être sous le bord de la fenêtre, sous l'en-tête ou sous la barre du recadrage : la zone défile pour l'amener à l'écran.
+  const first = await locator.boundingBox();
+  const { height } = viewer.viewportSize() ?? { height: await viewer.evaluate(() => innerHeight) };
+  const middle = first.y + first.height / 2;
+  if (middle < 100 || middle > height - 120) await viewer.evaluate((by) => document.getElementById('editor-scroll').scrollBy(0, by), middle - height / 2);
+  const box = await locator.boundingBox();
+  const from = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await viewer.mouse.move(from.x, from.y);
+  await viewer.mouse.down();
+  await viewer.mouse.move(from.x + dx, from.y + dy, { steps: 6 });
+  await viewer.mouse.up();
+}
+
+async function groupBouton(context) {
+  console.log('\n— Le bouton « Recadrer »');
+  const home = await extensionPage(context, 'viewer/viewer.html');
+  await home.waitForSelector('body[data-ready="true"]');
+  await resetDb(home);
+  const id = await seedCapture(home, { heightPoints: 900 });
+  const W = 2560;
+  const H = 1800;
+  try {
+    await test('bouton : placé après « Tout effacer » et avant « Copier l’image », hors des outils', () =>
+      inEditor(context, id, async (viewer) => {
+        const order = await viewer.evaluate(() => [...document.querySelectorAll('.editor-bar button')].map((el) => el.getAttribute('aria-label') ?? el.textContent.trim()));
+        const inTools = await viewer.locator('#editor-tools #editor-trim').count();
+        const wanted = ['Terminer', 'Annuler', 'Rétablir', 'Tout effacer', 'Recadrer', 'Copier l’image'];
+        return { ok: same(order, wanted) && inTools === 0, detail: order.join(', ') };
+      }),
+    );
+
+    await test('bouton : poignées aux 4 côtés et 4 coins', () =>
+      inEditor(context, id, async (viewer) => {
+        await startTrim(viewer);
+        const view = await scaleOf(viewer);
+        const dragged = {};
+        // Chaque poignée déplace ce qu'elle doit, et rien d'autre. On part d'un cadre rentré de partout.
+        const start = { x: 200, y: 200, w: 2000, h: 1200 };
+        for (const key of ['ArrowRight', 'ArrowDown']) {
+          await handle(viewer, 'nw').focus();
+          for (let i = 0; i < 20; i++) await viewer.keyboard.press(`Shift+${key}`);
+        }
+        for (const [edge, key, presses] of [['se', 'ArrowLeft', 36], ['se', 'ArrowUp', 40]]) {
+          await handle(viewer, edge).focus();
+          for (let i = 0; i < presses; i++) await viewer.keyboard.press(`Shift+${key}`);
+        }
+        const ready = await rectOf(viewer);
+        const edges = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'];
+        const count = await viewer.locator('#editor-trim-box [data-edge]').count();
+        const problems = [];
+        for (const edge of edges) {
+          const before = await rectOf(viewer);
+          await dragBy(viewer, handle(viewer, edge), edge.includes('e') ? 20 : -20, edge.includes('s') ? 20 : -20);
+          const after = await rectOf(viewer);
+          const moved = {
+            left: after.x !== before.x,
+            top: after.y !== before.y,
+            right: after.x + after.w !== before.x + before.w,
+            bottom: after.y + after.h !== before.y + before.h,
+          };
+          const wanted = { left: edge.includes('w'), top: edge.includes('n'), right: edge.includes('e'), bottom: edge.includes('s') };
+          if (!same(moved, wanted)) problems.push(`${edge} : ${JSON.stringify(moved)}`);
+          dragged[edge] = after;
+        }
+        const whole = [...Object.values(dragged)].every((rect) => Number.isInteger(rect.x) && Number.isInteger(rect.y) && Number.isInteger(rect.w) && Number.isInteger(rect.h));
+        return { ok: count === 8 && same(ready, start) && !problems.length && whole, detail: `${count} poignées, départ ${JSON.stringify(ready)}, échelle ${view.toFixed(3)} ; ${problems.join(' ; ') || 'chacune tire ses bords'}` };
+      }),
+    );
+
+    await test('bouton : Entrée valide, Échap annule', () =>
+      inEditor(context, id, async (viewer) => {
+        await startTrim(viewer);
+        await viewer.keyboard.press('Shift+ArrowDown');
+        const pending = await rectOf(viewer);
+        await viewer.keyboard.press('Escape');
+        const cancelled = await trimOf(viewer);
+        const open = await viewer.locator('#editor').isVisible();
+        const leftMode = await viewer.locator('#editor-trim-box [data-edge]').first().isVisible().catch(() => false);
+        await startTrim(viewer);
+        const restarted = await rectOf(viewer);
+        await viewer.keyboard.press('Shift+ArrowDown');
+        await viewer.keyboard.press('Enter');
+        await waitTrim(viewer, `0,10,${W},${H - 10}`);
+        const applied = await trimOf(viewer);
+        const focus = await viewer.evaluate(() => document.activeElement.id);
+        const ok = same(pending, { x: 0, y: 10, w: W, h: H - 10 }) && cancelled === null && open && !leftMode && same(restarted, { x: 0, y: 0, w: W, h: H }) && same(applied, { x: 0, y: 10, w: W, h: H - 10 }) && focus === 'editor-trim';
+        return { ok, detail: `en cours ${JSON.stringify(pending)}, annulé ${cancelled}, repris ${JSON.stringify(restarted)}, validé ${JSON.stringify(applied)}, focus ${focus}` };
+      }),
+    );
+
+    await test('bouton : Rétablir le cadrage', () =>
+      inEditor(context, id, async (viewer) => {
+        await startTrim(viewer);
+        await viewer.keyboard.press('Shift+ArrowDown');
+        await viewer.keyboard.press('Enter');
+        await waitTrim(viewer, `0,10,${W},${H - 10}`);
+        const shownAfter = await viewer.locator('#editor-trim-reset').isVisible();
+        // Hors du mode comme dans le mode.
+        await viewer.locator('#editor-trim-reset').click();
+        await waitTrim(viewer, '');
+        const gone = await viewer.locator('#editor-trim-layer').isVisible();
+        await startTrim(viewer);
+        await viewer.keyboard.press('Shift+ArrowDown');
+        await viewer.keyboard.press('Enter');
+        await waitTrim(viewer, `0,10,${W},${H - 10}`);
+        await startTrim(viewer);
+        await viewer.locator('#editor-trim-reset').click();
+        await waitTrim(viewer, '');
+        const out = await viewer.locator('#editor-trim-box [data-edge]').first().isVisible().catch(() => false);
+        return { ok: shownAfter && !gone && !out, detail: `bouton visible ${shownAfter}, voile restant ${gone}, mode restant ${out}` };
+      }),
+    );
+
+    await test('bouton : minimum 20 × 20', () =>
+      inEditor(context, id, async (viewer) => {
+        await startTrim(viewer);
+        await dragBy(viewer, handle(viewer, 's'), 0, -3000);
+        const short = await rectOf(viewer);
+        await dragBy(viewer, handle(viewer, 'e'), -3000, 0);
+        const narrow = await rectOf(viewer);
+        await handle(viewer, 's').focus();
+        for (let i = 0; i < 3; i++) await viewer.keyboard.press('Shift+ArrowUp');
+        const keyed = await rectOf(viewer);
+        return { ok: short.h === 20 && short.y === 0 && narrow.w === 20 && narrow.x === 0 && keyed.h === 20, detail: JSON.stringify({ short, narrow, keyed }) };
+      }),
+    );
+
+    await test('bouton : hors image refusé', () =>
+      inEditor(context, id, async (viewer) => {
+        await startTrim(viewer);
+        await dragBy(viewer, handle(viewer, 'w'), -500, 0);
+        const left = await rectOf(viewer);
+        await dragBy(viewer, handle(viewer, 'n'), 0, -500);
+        const top = await rectOf(viewer);
+        await dragBy(viewer, handle(viewer, 'nw'), 80, 80);
+        await dragBy(viewer, handle(viewer, 'se'), -80, -80);
+        // Le cadre entier s'arrête aux bords, sans changer de taille.
+        const before = await rectOf(viewer);
+        await dragBy(viewer, viewer.locator('#editor-trim-box'), 2000, 2000);
+        const moved = await rectOf(viewer);
+        const ok = same(left, { x: 0, y: 0, w: W, h: H }) && same(top, left) && moved.w === before.w && moved.h === before.h && moved.x + moved.w === W && moved.y + moved.h === H;
+        return { ok, detail: JSON.stringify({ left, top, before, moved }) };
+      }),
+    );
+
+    await test('bouton : flèches 1 px, 10 px avec ⇧', () =>
+      inEditor(context, id, async (viewer) => {
+        await startTrim(viewer);
+        const first = await viewer.evaluate(() => document.activeElement.dataset.edge);
+        await viewer.keyboard.press('ArrowDown');
+        const one = await rectOf(viewer);
+        await viewer.keyboard.press('Shift+ArrowDown');
+        const ten = await rectOf(viewer);
+        await handle(viewer, 'w').focus();
+        await viewer.keyboard.press('ArrowRight');
+        const side = await rectOf(viewer);
+        await viewer.locator('#editor-trim-box').focus();
+        await viewer.keyboard.press('ArrowRight');
+        const whole = await rectOf(viewer);
+        const ok = first === 'n' && one.y === 1 && one.h === H - 1 && ten.y === 11 && ten.h === H - 11 && side.x === 1 && side.w === W - 1 && whole.x === 1 && whole.w === W - 1;
+        await viewer.keyboard.press('ArrowLeft');
+        const back = await rectOf(viewer);
+        return { ok: ok && back.x === 0 && back.w === W - 1, detail: JSON.stringify({ first, one, ten, side, whole, back }) };
+      }),
+    );
+
+    await test('bouton : ⌘Z et ⇧⌘Z', () =>
+      inEditor(context, id, async (viewer) => {
+        // Une annotation, puis un cadrage : chaque annulation défait l'un puis l'autre.
+        await viewer.keyboard.press('r');
+        const page = await viewer.locator('#editor-page').boundingBox();
+        await viewer.mouse.move(page.x + 200, page.y + 200);
+        await viewer.mouse.down();
+        await viewer.mouse.move(page.x + 400, page.y + 300, { steps: 5 });
+        await viewer.mouse.up();
+        const count = () => viewer.evaluate(() => Konva.stages.at(-1).find('Rect').filter((node) => !node.hasName('_anchor') && node.getParent().getClassName() === 'Group').length);
+        await viewer.waitForFunction(() => !document.querySelector('.editor-history [aria-label="Annuler"]').disabled);
+        await startTrim(viewer);
+        await viewer.keyboard.press('Shift+ArrowDown');
+        await viewer.keyboard.press('Enter');
+        await waitTrim(viewer, `0,10,${W},${H - 10}`);
+        const withBoth = await count();
+        await viewer.keyboard.press('Meta+z');
+        await waitTrim(viewer, '');
+        const trimUndone = await count();
+        await viewer.keyboard.press('Meta+z');
+        await viewer.waitForFunction(() => document.querySelector('.editor-history [aria-label="Annuler"]').disabled);
+        const itemUndone = await count();
+        await viewer.keyboard.press('Meta+Shift+z');
+        await viewer.waitForFunction(() => !document.querySelector('.editor-history [aria-label="Annuler"]').disabled);
+        const itemBack = await count();
+        await viewer.keyboard.press('Meta+Shift+z');
+        await waitTrim(viewer, `0,10,${W},${H - 10}`);
+        const ok = withBoth === 1 && trimUndone === 1 && itemUndone === 0 && itemBack === 1;
+        return { ok, detail: `annotations : ${withBoth}, ${trimUndone}, ${itemUndone}, ${itemBack} ; cadrage rétabli` };
+      }),
+    );
+
+    await test('bouton : les 7 outils ne bougent pas', () =>
+      inEditor(context, id, async (viewer) => {
+        const tools = await viewer.evaluate(() => [...document.querySelectorAll('.editor-group[data-kind="tool"] button')].map((el) => el.title));
+        const wanted = ['Flèche (F)', 'Rectangle (R)', 'Surligneur (S)', 'Texte (T)', 'Pastille numérotée (N)', 'Masquer (M)', 'Crayon (C)'];
+        return { ok: same(tools, wanted), detail: tools.join(', ') };
+      }),
+    );
+
+    await test('bouton : pendant le réglage, les lettres d’outil et la marge grise n’agissent pas', () =>
+      inEditor(context, id, async (viewer) => {
+        const pressed = () => viewer.evaluate(() => document.querySelector('.editor-group[data-kind="tool"] [aria-pressed="true"]').title);
+        const before = await pressed();
+        await startTrim(viewer);
+        await viewer.keyboard.press('r');
+        const during = await pressed();
+        const page = await viewer.locator('#editor-page').boundingBox();
+        await viewer.mouse.move(page.x - 6, page.y + 100);
+        await viewer.mouse.down();
+        await viewer.mouse.move(page.x - 6, page.y + 300, { steps: 4 });
+        await viewer.mouse.up();
+        await viewer.keyboard.press('Escape');
+        await viewer.waitForTimeout(200);
+        const undoable = await viewer.locator('.editor-history [aria-label="Annuler"]').isDisabled();
+        return { ok: before === during && undoable, detail: `${before} → ${during}, rien à annuler : ${undoable}` };
+      }),
+    );
+
+    await test('bouton : Terminer pendant le réglage abandonne le cadre en cours', () =>
+      withViewer(context, id, async (viewer) => {
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        await startTrim(viewer);
+        await viewer.keyboard.press('Shift+ArrowDown');
+        await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+        await viewer.waitForSelector('#editor', { state: 'hidden' });
+        await annotateButton(viewer).click();
+        await editorReady(viewer);
+        const trim = await trimOf(viewer);
+        const veil = await viewer.locator('#editor-trim-layer').isVisible();
+        return { ok: trim === null && !veil, detail: `cadrage ${trim}, voile ${veil}` };
+      }),
+    );
+
+    await test('bouton : extérieur voilé et phrase sur l’original', () =>
+      inEditor(context, id, async (viewer) => {
+        await startTrim(viewer);
+        const phrase = await viewer.locator('#editor-trim-note').innerText();
+        for (const edge of ['nw']) {
+          await handle(viewer, edge).focus();
+          for (let i = 0; i < 30; i++) await viewer.keyboard.press('Shift+ArrowDown');
+          for (let i = 0; i < 30; i++) await viewer.keyboard.press('Shift+ArrowRight');
+        }
+        await viewer.keyboard.press('Enter');
+        await waitTrim(viewer, `300,300,${W - 300},${H - 300}`);
+        const view = await scaleOf(viewer);
+        const report = await viewer.evaluate(() => {
+          const sides = {};
+          for (const el of document.querySelectorAll('.editor-trim-veil')) {
+            const box = el.getBoundingClientRect();
+            sides[el.dataset.side] = { width: box.width, height: box.height, color: getComputedStyle(el).backgroundColor };
+          }
+          return { sides, phrase: document.getElementById('editor-trim-note').innerText, stageBelow: getComputedStyle(document.getElementById('editor-trim-layer')).pointerEvents };
+        });
+        const ok =
+          /original reste dans l.historique de l.extension, sur ton ordinateur, jusqu.à suppression/i.test(phrase) &&
+          /original reste dans l.historique/i.test(report.phrase) &&
+          Math.abs(report.sides.top.height - 300 * view) < 2 &&
+          Math.abs(report.sides.left.width - 300 * view) < 2 &&
+          report.sides.top.color !== 'rgba(0, 0, 0, 0)' &&
+          report.stageBelow === 'none';
+        return { ok, detail: JSON.stringify(report).slice(0, 220) };
+      }),
+    );
+
+    await test('bouton : captures d’écran clair et sombre', () =>
+      inEditor(context, id, async (viewer) => {
+        await startTrim(viewer);
+        await handle(viewer, 'nw').focus();
+        for (let i = 0; i < 25; i++) await viewer.keyboard.press('Shift+ArrowDown');
+        for (let i = 0; i < 25; i++) await viewer.keyboard.press('Shift+ArrowRight');
+        const shots = [];
+        for (const scheme of ['light', 'dark']) {
+          await viewer.emulateMedia({ colorScheme: scheme });
+          const file = path.join(WORK, `recadrer-${scheme}.png`);
+          await viewer.screenshot({ path: file });
+          shots.push((await fs.stat(file)).size);
+        }
+        await viewer.emulateMedia({ colorScheme: null });
+        return { ok: shots.every((size) => size > 5000), detail: shots.join(' et ') };
+      }),
+    );
+  } finally {
+    await home.close();
+  }
+}
+
 async function main() {
   await fs.rm(WORK, { recursive: true, force: true });
   await fs.mkdir(WORK, { recursive: true });
@@ -464,7 +807,7 @@ async function main() {
   const context = await launch(extension, 'profile', WORK);
   try {
     context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
-    const groups = { stockage: groupStockage, rendu: groupRendu };
+    const groups = { stockage: groupStockage, rendu: groupRendu, bouton: groupBouton };
     for (const [name, group] of Object.entries(groups)) {
       if (ONLY && ONLY !== name) continue;
       await group(context);

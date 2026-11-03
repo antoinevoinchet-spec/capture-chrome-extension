@@ -36,6 +36,23 @@ const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 const HANDLE_RADIUS = 7;
 const RESIZABLE = ['rect', 'highlight', 'mask'];
 const CLEAR_QUESTION = 'Effacer toutes les annotations de cette capture ?';
+const CLEAR_WITH_TRIM_QUESTION = 'Effacer toutes les annotations et le cadrage de cette capture ?';
+// Recadrage : plus petit cadre permis, en pixels de la capture ; pas des flèches, sans et avec ⇧ ; poignées, dans l'ordre du clavier.
+const TRIM_MIN = 20;
+const TRIM_STEP = 1;
+const TRIM_BIG_STEP = 10;
+const TRIM_HANDLES = {
+  n: 'Bord du haut',
+  ne: 'Coin en haut à droite',
+  e: 'Bord droit',
+  se: 'Coin en bas à droite',
+  s: 'Bord du bas',
+  sw: 'Coin en bas à gauche',
+  w: 'Bord gauche',
+  nw: 'Coin en haut à gauche',
+};
+const TRIM_ARROWS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+const pixels = new Intl.NumberFormat('fr-FR');
 
 const els = {
   root: document.getElementById('editor'),
@@ -49,6 +66,15 @@ const els = {
   undo: document.querySelector('.editor-history [aria-label="Annuler"]'),
   redo: document.querySelector('.editor-history [aria-label="Rétablir"]'),
   clear: null,
+  trim: document.getElementById('editor-trim'),
+  trimLayer: document.getElementById('editor-trim-layer'),
+  trimBox: document.getElementById('editor-trim-box'),
+  trimBar: document.getElementById('editor-trim-bar'),
+  trimSize: document.getElementById('editor-trim-size'),
+  trimReset: document.getElementById('editor-trim-reset'),
+  trimCancel: document.getElementById('editor-trim-cancel'),
+  trimApply: document.getElementById('editor-trim-apply'),
+  veils: Object.fromEntries([...document.querySelectorAll('.editor-trim-veil')].map((el) => [el.dataset.side, el])),
 };
 
 const svgIcon = (paths) =>
@@ -72,8 +98,9 @@ const CLEAR_ICON = svgIcon('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7
 const SIZE_DOTS = { s: 3.5, m: 6, l: 9 };
 
 // Séance en cours (null quand l'éditeur est fermé). Champs : record, stitcher, parts, onChange, onCopy, onClose,
-// items (les annotations, remplacées par une nouvelle liste à chaque modification), undoStack et redoStack (les listes
-// précédentes et suivantes, jamais modifiées sur place), selection (l'id de l'annotation sélectionnée), tool, colors (la couleur
+// items (les annotations, remplacées par une nouvelle liste à chaque modification), trim (le cadrage validé, ou null), trimming (le réglage
+// en cours : rectangle et glisser, ou null), replanning (changements de cadrage dont les coupes ne sont pas encore recalculées),
+// undoStack et redoStack (les états { items, trim } précédents et suivants, jamais modifiés sur place), selection (l'id de l'annotation sélectionnée), tool, colors (la couleur
 // de chaque outil), size, gesture (le geste de souris en cours), textEdit (le texte en cours de saisie), queue (les modifications en
 // attente, l'une après l'autre) et pending (leur nombre), closing, view (points d'écran par pixel de capture), offset (marge gauche de
 // la page), tiles, stage, layer, masks et shapes (les deux groupes d'annotations), nodes (le nœud de chaque annotation, par id),
@@ -83,18 +110,26 @@ let session = null;
 
 buildToolbar();
 buildHistory();
+buildTrimHandles();
 
 // Ouvre l'éditeur sur la capture `record`, positionné sur le point `startTop` (pixels de la capture).
 // `parts` sont les images de la page de résultats (les coupes y sont affichées) ; `items` les annotations de départ.
-// `onChange(items)` reçoit la nouvelle liste après chaque modification validée ; `onCopy(index)` copie l'une des images ;
+// `trim` est le cadrage de départ ; `replan()` recalcule les coupes après un changement de cadrage et les rend ; `onRefuse(message)` dit
+// pourquoi une copie est refusée.
+// `onChange({ items, trim })` reçoit le nouvel état après chaque modification validée ; `onCopy(index)` copie l'une des images ;
 // `onClose()` est appelé quand l'éditeur est refermé.
-export function openEditor({ record, stitcher, parts, items, startTop, onChange, onCopy, onClose }) {
+export function openEditor({ record, stitcher, parts, items, trim = null, startTop, onChange, onCopy, onClose, replan, onRefuse }) {
   if (session) return;
   session = {
     record,
     stitcher,
     parts,
     items,
+    trim,
+    trimming: null,
+    replanning: 0,
+    replan,
+    onRefuse,
     onChange,
     onCopy,
     onClose,
@@ -132,6 +167,15 @@ export function openEditor({ record, stitcher, parts, items, startTop, onChange,
   els.undo.addEventListener('click', undo, { signal });
   els.redo.addEventListener('click', redo, { signal });
   els.clear.addEventListener('click', clearAll, { signal });
+  els.trim.addEventListener('click', startTrim, { signal });
+  els.trimApply.addEventListener('click', applyTrim, { signal });
+  els.trimCancel.addEventListener('click', cancelTrim, { signal });
+  els.trimReset.addEventListener('click', resetTrim, { signal });
+  els.trimLayer.addEventListener('pointerdown', onTrimPointerDown, { signal });
+  els.trimLayer.addEventListener('pointermove', onTrimPointerMove, { signal });
+  els.trimLayer.addEventListener('pointerup', onTrimPointerUp, { signal });
+  els.trimLayer.addEventListener('pointercancel', onTrimPointerCancel, { signal });
+  els.trimLayer.addEventListener('contextmenu', (event) => event.preventDefault(), { signal });
   els.tools.addEventListener('click', onToolbarClick, { signal });
   els.scroll.addEventListener('scroll', syncView, { passive: true, signal });
   els.stage.addEventListener('pointerdown', onPointerDown, { signal });
@@ -155,6 +199,9 @@ async function closeEditor() {
   if (!ended || ended.closing) return;
   ended.closing = true;
   ended.abort.abort();
+  // Un cadre en cours de réglage n'est pas validé : il est abandonné.
+  ended.trimming = null;
+  els.tools.inert = false;
   commitText();
   await ended.queue;
   window.removeEventListener('beforeunload', onBeforeUnload);
@@ -164,6 +211,9 @@ async function closeEditor() {
   ended.stage.destroy();
   for (const tile of ended.tiles) releaseTile(tile);
   els.page.replaceChildren();
+  els.trimLayer.hidden = true;
+  els.trimBar.hidden = true;
+  delete els.scroll.dataset.trimBar;
   setPageInert(false);
   els.root.hidden = true;
   ended.onClose();
@@ -176,6 +226,10 @@ function setPageInert(inert) {
 
 // Pendant la saisie d'un texte, les touches n'arrivent pas jusqu'ici (voir onFieldKeydown).
 function onKeydown(event) {
+  if (session.trimming) {
+    onTrimKeydown(event);
+    return;
+  }
   if (event.key === 'Escape') {
     closeEditor();
     return;
@@ -316,9 +370,10 @@ function showChoices() {
 
 // Annuler, Rétablir et Tout effacer ne sont actifs que s'il y a quelque chose à défaire, à rétablir ou à effacer.
 function showHistory() {
-  els.undo.disabled = session.undoStack.length === 0;
-  els.redo.disabled = session.redoStack.length === 0;
-  els.clear.disabled = session.items.length === 0;
+  const trimming = Boolean(session.trimming);
+  els.undo.disabled = trimming || session.undoStack.length === 0;
+  els.redo.disabled = trimming || session.redoStack.length === 0;
+  els.clear.disabled = trimming || (session.items.length === 0 && !session.trim);
 }
 
 // ---- Mise en page : échelle, page, tuiles, coupes, calque ----
@@ -407,6 +462,7 @@ function layout(top, gap = 0) {
   // Les poignées d'une flèche gardent la même taille à l'écran, quelle que soit l'échelle.
   for (const handle of session.handles.getChildren()) handle.scale({ x: 1 / view, y: 1 / view });
 
+  showTrim();
   els.scroll.scrollTop = Math.max(0, top * view - gap);
   syncView();
 }
@@ -500,7 +556,7 @@ async function drawTile(tile) {
   tile.canvas = canvas;
   tile.el.append(canvas);
   try {
-    await stitcher.renderPreview({ top: tile.top, height: tile.height }, canvas, { overlay: false });
+    await stitcher.renderPreview({ top: tile.top, height: tile.height }, canvas, { overlay: false, full: true });
   } catch (err) {
     console.error(`Tuile de fond non dessinée : ${err.message}`);
   }
@@ -562,7 +618,7 @@ function hitAt(event) {
 // Un geste commence à l'appui : s'il devient un glisser, il tire une extrémité de flèche, déplace l'annotation sélectionnée (si on
 // la touche) ou trace avec l'outil actif. Sans glisser, c'est un clic (voir clickDraw).
 function onPointerDown(event) {
-  if (event.button !== 0 || !event.isPrimary) return;
+  if (event.button !== 0 || !event.isPrimary || session.trimming) return;
   // Un clic hors du champ de texte le valide, et ne fait rien d'autre.
   if (session.textEdit) {
     commitText();
@@ -857,15 +913,18 @@ function queueCreation(item, preview) {
 
 // Remplace la liste des annotations. L'ancienne rejoint l'historique de « Annuler », celui de « Rétablir » est vidé, et la page
 // est prévenue pour enregistrer.
-function commit(items) {
+function commit(items, trim = session.trim) {
   const { undoStack, redoStack } = session;
-  undoStack.push(session.items);
+  undoStack.push(snapshot());
   if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
   redoStack.length = 0;
   session.items = items;
-  session.onChange(items);
+  session.trim = trim;
+  session.onChange(snapshot());
   showHistory();
 }
+
+const snapshot = () => ({ items: session.items, trim: session.trim });
 
 async function addItem(draft, preview) {
   const before = session.items;
@@ -903,8 +962,8 @@ function refreshChanged(before, items) {
 }
 
 // Remplace la liste par `items` et redessine tout (retrait, effacement : les pastilles se renumérotent).
-function replaceAll(items) {
-  commit(items);
+function replaceAll(items, trim) {
+  commit(items, trim);
   redraw();
 }
 
@@ -916,23 +975,33 @@ function removeSelection() {
 }
 
 function clearAll() {
-  if (!confirm(CLEAR_QUESTION)) return;
+  if (!confirm(session.trim ? CLEAR_WITH_TRIM_QUESTION : CLEAR_QUESTION)) return;
   select(null);
-  queueEdit(() => replaceAll([]), 'Effacement non enregistré');
+  queueTrimEdit(async () => {
+    const trimmed = Boolean(session.trim);
+    replaceAll([], null);
+    showTrim();
+    if (trimmed) await refreshCuts();
+  }, 'Effacement non enregistré');
 }
 
 const undo = () => travel(session.undoStack, session.redoStack);
 const redo = () => travel(session.redoStack, session.undoStack);
 
-// Passe à la liste du dessus de `from` ; la liste en cours est gardée dans `to`.
+// Passe à l'état du dessus de `from` ; l'état en cours est gardé dans `to`.
 function travel(from, to) {
-  queueEdit(() => {
+  queueTrimEdit(async () => {
     if (!from.length) return;
-    to.push(session.items);
-    session.items = from.pop();
-    session.onChange(session.items);
+    to.push(snapshot());
+    const { items, trim } = from.pop();
+    const moved = !sameTrim(trim, session.trim);
+    session.items = items;
+    session.trim = trim;
+    session.onChange(snapshot());
     redraw();
     showHistory();
+    showTrim();
+    if (moved) await refreshCuts();
   }, 'Historique non appliqué');
 }
 
@@ -990,7 +1059,7 @@ function redraw() {
 
 // Un double-clic sur un texte rouvre sa saisie, à sa place : le texte dessiné s'efface le temps de la modification.
 function onDoubleClick(event) {
-  if (session.textEdit) return;
+  if (session.textEdit || session.trimming) return;
   const { id } = hitAt(event);
   const item = session.items.find((current) => current.id === id);
   if (item?.type !== 'text') return;
@@ -1109,6 +1178,223 @@ function updateCopyLabel() {
   if (els.copy.textContent !== label) els.copy.textContent = label;
 }
 
+// Tant que le cadrage n'est pas validé ou que ses coupes se recalculent, les images ne correspondent pas encore à ce qui est affiché.
 function copyReadingPart() {
-  session.onCopy(readingPart());
+  if (session.trimming) session.onRefuse?.('Valide ou annule le cadrage, puis copie l’image.');
+  else if (session.replanning) session.onRefuse?.('Le cadrage se recalcule : réessaie dans un instant.');
+  else session.onCopy(readingPart());
+}
+
+// ---- Recadrage ----
+
+const sameTrim = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const trimText = (rect) => (rect ? `${rect.x},${rect.y},${rect.w},${rect.h}` : '');
+
+function buildTrimHandles() {
+  els.trimBox.replaceChildren(
+    ...Object.entries(TRIM_HANDLES).map(([edge, label]) => {
+      const el = document.createElement('div');
+      el.className = 'editor-trim-handle';
+      el.dataset.edge = edge;
+      el.tabIndex = 0;
+      el.setAttribute('role', 'button');
+      el.setAttribute('aria-label', label);
+      return el;
+    }),
+  );
+}
+
+// Une modification qui peut changer le cadrage : la copie est refusée dès la demande, jusqu'à ce que les coupes soient recalculées.
+function queueTrimEdit(task, failure) {
+  const current = session;
+  current.replanning++;
+  queueEdit(async () => {
+    try {
+      await task();
+    } finally {
+      current.replanning--;
+    }
+  }, failure);
+}
+
+// Le cadrage a changé : nouvelles coupes, pointillés à jour.
+async function refreshCuts() {
+  const current = session;
+  current.parts = (await current.replan?.()) ?? current.parts;
+  for (const line of els.page.querySelectorAll('.editor-cut')) line.remove();
+  els.page.append(...current.parts.slice(1).map((part) => cutLine(part, current.view)));
+  updateCopyLabel();
+}
+
+// Pose le voile et le cadre sur la page : le réglage en cours, sinon le cadrage validé. `data-rect` et `data-trim` les disent en clair.
+function showTrim() {
+  const { trimming, trim, record, view, offset } = session;
+  const rect = trimming?.rect ?? trim;
+  const layer = els.trimLayer;
+  layer.dataset.trim = trimText(trim);
+  layer.dataset.rect = trimText(rect);
+  layer.toggleAttribute('data-active', Boolean(trimming));
+  layer.hidden = !rect;
+  els.trimBar.hidden = !rect;
+  els.trim.setAttribute('aria-pressed', String(Boolean(trimming)));
+  els.trimBox.tabIndex = trimming ? 0 : -1;
+  els.trimApply.hidden = !trimming;
+  els.trimCancel.hidden = !trimming;
+  els.trimReset.hidden = !trim;
+  if (rect) els.scroll.dataset.trimBar = '';
+  else delete els.scroll.dataset.trimBar;
+  if (!rect) return;
+
+  const width = record.width * view;
+  const height = record.height * view;
+  layer.style.left = `${offset}px`;
+  layer.style.width = `${width}px`;
+  layer.style.height = `${height}px`;
+  const [left, top, w, h] = [rect.x * view, rect.y * view, rect.w * view, rect.h * view];
+  place(els.trimBox, left, top, w, h);
+  place(els.veils.top, 0, 0, width, top);
+  place(els.veils.bottom, 0, top + h, width, height - top - h);
+  place(els.veils.left, 0, top, left, h);
+  place(els.veils.right, left + w, top, width - left - w, h);
+  els.trimSize.textContent = `${pixels.format(rect.w)} × ${pixels.format(rect.h)} px.`;
+}
+
+function place(el, left, top, width, height) {
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
+  el.style.width = `${width}px`;
+  el.style.height = `${height}px`;
+}
+
+// Le rectangle `rect` dont le bord, le coin ou le cadre entier (`move`) est déplacé de (dx, dy) : pixels entiers, dans la capture, au moins
+// TRIM_MIN de côté.
+function movedRect(rect, edge, dx, dy) {
+  const { width, height } = session.record;
+  if (edge === 'move') return { ...rect, x: clamp(rect.x + dx, 0, width - rect.w), y: clamp(rect.y + dy, 0, height - rect.h) };
+  const minW = Math.min(TRIM_MIN, width);
+  const minH = Math.min(TRIM_MIN, height);
+  let [left, top, right, bottom] = [rect.x, rect.y, rect.x + rect.w, rect.y + rect.h];
+  if (edge.includes('w')) left = clamp(left + dx, 0, right - minW);
+  if (edge.includes('e')) right = clamp(right + dx, left + minW, width);
+  if (edge.includes('n')) top = clamp(top + dy, 0, bottom - minH);
+  if (edge.includes('s')) bottom = clamp(bottom + dy, top + minH, height);
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+// Le bouton « Recadrer » : entre dans le réglage, ou le valide s'il est en cours.
+function startTrim() {
+  if (session.trimming) {
+    applyTrim();
+    return;
+  }
+  commitText();
+  select(null);
+  const { width, height } = session.record;
+  session.trimming = { rect: session.trim ? { ...session.trim } : { x: 0, y: 0, w: width, h: height }, drag: null };
+  els.tools.inert = true;
+  showTrim();
+  showHistory();
+  els.trimBox.querySelector('[data-edge="n"]').focus({ preventScroll: true });
+}
+
+function leaveTrim() {
+  session.trimming = null;
+  els.tools.inert = false;
+  showTrim();
+  showHistory();
+  els.trim.focus({ preventScroll: true });
+}
+
+function cancelTrim() {
+  leaveTrim();
+}
+
+// Entrée : le rectangle devient le cadrage. L'image entière n'est pas un cadrage.
+function applyTrim() {
+  const { rect } = session.trimming;
+  const whole = rect.w === session.record.width && rect.h === session.record.height;
+  leaveTrim();
+  changeTrim(whole ? null : rect);
+}
+
+function resetTrim() {
+  if (session.trimming) leaveTrim();
+  // Le bouton disparaît avec le cadrage : le focus ne doit pas se perdre avec lui.
+  els.trim.focus({ preventScroll: true });
+  changeTrim(null);
+}
+
+function changeTrim(next) {
+  if (sameTrim(next, session.trim)) return;
+  queueTrimEdit(async () => {
+    commit(session.items, next);
+    showTrim();
+    await refreshCuts();
+  }, 'Cadrage non appliqué');
+}
+
+// Pendant le réglage : Échap annule, Entrée valide (sauf sur un bouton, qui garde son action), les flèches déplacent la poignée qui a le focus,
+// ou le cadre entier. Les autres touches n'agissent pas : ni outils, ni annulation, ni fermeture.
+function onTrimKeydown(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    cancelTrim();
+    return;
+  }
+  if (event.key === 'Enter') {
+    if (event.target.closest?.('button')) return;
+    event.preventDefault();
+    applyTrim();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && ['c', 'z'].includes(event.key.toLowerCase())) {
+    event.preventDefault();
+    if (event.key.toLowerCase() === 'c') copyReadingPart();
+    return;
+  }
+  const arrow = TRIM_ARROWS[event.key];
+  if (!arrow || !els.trimBox.contains(event.target)) return;
+  event.preventDefault();
+  const step = event.shiftKey ? TRIM_BIG_STEP : TRIM_STEP;
+  const edge = event.target.dataset.edge ?? 'move';
+  session.trimming.rect = movedRect(session.trimming.rect, edge, arrow[0] * step, arrow[1] * step);
+  showTrim();
+  // La poignée déplacée reste à l'écran (pas un côté gauche ou droit, qui peut être plus haut que la zone visible).
+  if (edge !== 'e' && edge !== 'w') event.target.scrollIntoView({ block: 'nearest' });
+}
+
+function trimPoint(event) {
+  const page = els.page.getBoundingClientRect();
+  return { x: (event.clientX - page.left) / session.view, y: (event.clientY - page.top) / session.view };
+}
+
+function onTrimPointerDown(event) {
+  const { trimming } = session;
+  if (!trimming || event.button !== 0 || !event.isPrimary) return;
+  const edge = event.target.dataset.edge ?? (event.target === els.trimBox ? 'move' : null);
+  if (!edge) return;
+  els.trimLayer.setPointerCapture(event.pointerId);
+  trimming.drag = { edge, pointerId: event.pointerId, from: trimPoint(event), rect: trimming.rect };
+}
+
+// Le déplacement se mesure dans la capture : il suit la molette pendant le geste.
+function onTrimPointerMove(event) {
+  const { trimming } = session;
+  const drag = trimming?.drag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const here = trimPoint(event);
+  trimming.rect = movedRect(drag.rect, drag.edge, Math.round(here.x - drag.from.x), Math.round(here.y - drag.from.y));
+  showTrim();
+}
+
+function onTrimPointerUp(event) {
+  if (session.trimming?.drag?.pointerId === event.pointerId) session.trimming.drag = null;
+}
+
+function onTrimPointerCancel(event) {
+  const { trimming } = session;
+  if (trimming?.drag?.pointerId !== event.pointerId) return;
+  trimming.rect = trimming.drag.rect;
+  trimming.drag = null;
+  showTrim();
 }

@@ -3892,12 +3892,12 @@ async function testFinish(context) {
         // Depuis le premier outil, Maj+Tab remonte jusqu'à Terminer ; Tab redescend ensuite jusqu'à la dernière taille.
         await viewer.locator('#editor-tools button').first().focus();
         const head = [];
-        for (let i = 0; i < 5; i++) head.unshift(await press('Shift+Tab'));
-        for (let i = 0; i < 5; i++) await viewer.keyboard.press('Tab');
+        for (let i = 0; i < 6; i++) head.unshift(await press('Shift+Tab'));
+        for (let i = 0; i < 6; i++) await viewer.keyboard.press('Tab');
         const tail = [await viewer.evaluate(focusedStop)];
         for (let i = 1; i < TOOL_NAMES.length + COLOR_NAMES.length + SIZE_NAMES.length; i++) tail.push(await press('Tab'));
         const stops = [...head, ...tail];
-        const expected = ['Terminer', 'Annuler', 'Rétablir', 'Tout effacer', 'Copier l’image 1', ...TOOL_NAMES, ...COLOR_NAMES, ...SIZE_NAMES];
+        const expected = ['Terminer', 'Annuler', 'Rétablir', 'Tout effacer', 'Recadrer', 'Copier l’image 1', ...TOOL_NAMES, ...COLOR_NAMES, ...SIZE_NAMES];
 
         // Après la dernière taille, la zone de la capture a le focus (contour visible) et Page suivante la fait défiler.
         const area = await press('Tab');

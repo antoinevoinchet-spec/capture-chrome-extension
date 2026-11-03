@@ -90,6 +90,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5" /><path d="M20 9H10a6 6 0 0 0 0 12h3" /></svg>
             </button>
           </div>
+          <button id="editor-trim" class="btn-secondary" type="button" aria-pressed="false">Recadrer</button>
           <button id="editor-copy" class="btn-primary" type="button">Copier l’image</button>
         </div>
         <p id="editor-alert" class="save-alert" role="alert" hidden></p>
@@ -99,6 +100,21 @@
         <div id="editor-scroll" class="editor-scroll">
           <div class="editor-stage-host"><div id="editor-stage" class="editor-stage"></div></div>
           <div id="editor-page" class="editor-page"></div>
+          <div id="editor-trim-layer" class="editor-trim-layer" hidden>
+            <div class="editor-trim-veil" data-side="top"></div>
+            <div class="editor-trim-veil" data-side="bottom"></div>
+            <div class="editor-trim-veil" data-side="left"></div>
+            <div class="editor-trim-veil" data-side="right"></div>
+            <div id="editor-trim-box" class="editor-trim-box" role="group" aria-label="Cadre : les flèches le déplacent, Entrée valide, Échap annule"></div>
+          </div>
+        </div>
+        <div id="editor-trim-bar" class="editor-trim-bar" hidden>
+          <div class="editor-trim-panel">
+            <p class="editor-trim-text"><strong id="editor-trim-size"></strong> <span id="editor-trim-note">L’original reste dans l’historique de l’extension, sur ton ordinateur, jusqu’à suppression.</span></p>
+            <button id="editor-trim-reset" class="btn-secondary" type="button">Rétablir le cadrage</button>
+            <button id="editor-trim-cancel" class="btn-secondary" type="button">Annuler</button>
+            <button id="editor-trim-apply" class="btn-primary" type="button">Valider</button>
+          </div>
         </div>
       </div>
     </div>

@@ -275,7 +275,7 @@ async function editUnderLock(captureId, top) {
     parts,
     items: annotationState.items,
     startTop: top,
-    onChange: (items) => {
+    onChange: ({ items }) => {
       edited = true;
       setAnnotations(items);
       queueSave(captureId, items);
