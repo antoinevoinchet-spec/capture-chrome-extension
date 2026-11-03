@@ -32,8 +32,8 @@ export function check(name, ok, detail = '') {
 // Ce que le vrai manifeste doit dire à ce lot. Mis à jour en même temps que lui : les suites de tous les lots le lisent.
 export const MANIFEST_EXPECTED = {
   version: '0.2.0',
-  permissions: ['activeTab', 'scripting', 'downloads', 'storage'],
-  optional_host_permissions: undefined,
+  permissions: ['activeTab', 'scripting', 'downloads', 'storage', 'contextMenus', 'offscreen'],
+  optional_host_permissions: ['http://*/*', 'https://*/*'],
 };
 
 // Copie de test : ajoute <all_urls> pour lancer la capture sans cliquer sur l'icône,

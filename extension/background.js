@@ -33,6 +33,25 @@ chrome.commands.onCommand.addListener((command, tab) => {
   if (command === 'capture-visible') runCapture(tab, 'visible');
 });
 
+// Essai de la tâche 2 : la demande d'accès part-elle depuis un menu du clic droit ? La vraie version arrive à la tâche 6.
+const WEB_IMAGE_ORIGINS = ['http://*/*', 'https://*/*'];
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({ id: 'save-image-png', title: 'Enregistrer en PNG', contexts: ['image'] });
+  chrome.contextMenus.create({ id: 'save-image-jpg', title: 'Enregistrer en JPG', contexts: ['image'] });
+});
+chrome.contextMenus.onClicked.addListener((_info, tab) => {
+  chrome.permissions.request({ origins: WEB_IMAGE_ORIGINS }).then(
+    (granted) => {
+      badge(tab.id, granted ? 'OK' : '!', granted ? '#1a7f37' : '#d93025');
+      chrome.storage.session.set({ lastError: { message: granted ? 'Essai : accès accordé.' : 'Essai : la demande s’est bien affichée, tu as refusé.', at: Date.now() } });
+    },
+    (err) => {
+      badge(tab.id, '!', '#d93025');
+      chrome.storage.session.set({ lastError: { message: `Essai : Chrome n’a pas ouvert la demande (${err.message}).`, at: Date.now() } });
+    },
+  );
+});
+
 // Point d'entrée utilisé par les tests automatisés (ils ne peuvent pas cliquer sur l'icône).
 self.captureTab = (tabId, mode) => chrome.tabs.get(tabId).then((tab) => runCapture(tab, mode));
 

@@ -1009,7 +1009,7 @@ async function groupBatch(context, sw) {
   });
   await test('le manifeste est inchangé', async () => {
     const manifest = JSON.parse(await fs.readFile(path.join(EXTENSION, 'manifest.json'), 'utf8'));
-    const ok = manifest.permissions.join() === 'activeTab,scripting,downloads,storage' && !manifest.host_permissions && !manifest.content_security_policy && !manifest.web_accessible_resources;
+    const ok = manifest.permissions.join() === 'activeTab,scripting,downloads,storage,contextMenus,offscreen' && !manifest.host_permissions && !manifest.content_security_policy && !manifest.web_accessible_resources;
     return { ok, detail: manifest.permissions.join() };
   });
   await test('les libellés des boutons suivent le lot', async () => {
