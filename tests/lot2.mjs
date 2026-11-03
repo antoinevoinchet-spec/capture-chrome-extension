@@ -519,12 +519,13 @@ async function groupBouton(context) {
   const home = await extensionPage(context, 'viewer/viewer.html');
   await home.waitForSelector('body[data-ready="true"]');
   await resetDb(home);
-  const id = await seedCapture(home, { heightPoints: 900 });
   const W = 2560;
   const H = 1800;
+  // Chaque contrôle a sa capture : un cadrage validé s'enregistre désormais et suivrait le contrôle suivant.
+  const cleanEditor = async (run) => inEditor(context, await seedCapture(home, { heightPoints: 900 }), run);
   try {
     await test('bouton : placé après « Tout effacer » et avant « Copier l’image », hors des outils', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         const order = await viewer.evaluate(() => [...document.querySelectorAll('.editor-bar button')].map((el) => el.getAttribute('aria-label') ?? el.textContent.trim()));
         const inTools = await viewer.locator('#editor-tools #editor-trim').count();
         const wanted = ['Terminer', 'Annuler', 'Rétablir', 'Tout effacer', 'Recadrer', 'Copier l’image'];
@@ -533,7 +534,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : poignées aux 4 côtés et 4 coins', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         await startTrim(viewer);
         const view = await scaleOf(viewer);
         const dragged = {};
@@ -571,7 +572,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : Entrée valide, Échap annule', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         await startTrim(viewer);
         await viewer.keyboard.press('Shift+ArrowDown');
         const pending = await rectOf(viewer);
@@ -592,7 +593,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : Rétablir le cadrage', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         await startTrim(viewer);
         await viewer.keyboard.press('Shift+ArrowDown');
         await viewer.keyboard.press('Enter');
@@ -615,7 +616,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : minimum 20 × 20', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         await startTrim(viewer);
         await dragBy(viewer, handle(viewer, 's'), 0, -3000);
         const short = await rectOf(viewer);
@@ -629,7 +630,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : hors image refusé', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         await startTrim(viewer);
         await dragBy(viewer, handle(viewer, 'w'), -500, 0);
         const left = await rectOf(viewer);
@@ -647,7 +648,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : flèches 1 px, 10 px avec ⇧', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         await startTrim(viewer);
         const first = await viewer.evaluate(() => document.activeElement.dataset.edge);
         await viewer.keyboard.press('ArrowDown');
@@ -668,7 +669,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : ⌘Z et ⇧⌘Z', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         // Une annotation, puis un cadrage : chaque annulation défait l'un puis l'autre.
         await viewer.keyboard.press('r');
         const page = await viewer.locator('#editor-page').boundingBox();
@@ -700,7 +701,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : les 7 outils ne bougent pas', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         const tools = await viewer.evaluate(() => [...document.querySelectorAll('.editor-group[data-kind="tool"] button')].map((el) => el.title));
         const wanted = ['Flèche (F)', 'Rectangle (R)', 'Surligneur (S)', 'Texte (T)', 'Pastille numérotée (N)', 'Masquer (M)', 'Crayon (C)'];
         return { ok: same(tools, wanted), detail: tools.join(', ') };
@@ -708,7 +709,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : pendant le réglage, les lettres d’outil et la marge grise n’agissent pas', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         const pressed = () => viewer.evaluate(() => document.querySelector('.editor-group[data-kind="tool"] [aria-pressed="true"]').title);
         const before = await pressed();
         await startTrim(viewer);
@@ -727,7 +728,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : Terminer pendant le réglage abandonne le cadre en cours', () =>
-      withViewer(context, id, async (viewer) => {
+      seedCapture(home, { heightPoints: 900 }).then((id) => withViewer(context, id, async (viewer) => {
         await annotateButton(viewer).click();
         await editorReady(viewer);
         await startTrim(viewer);
@@ -739,11 +740,11 @@ async function groupBouton(context) {
         const trim = await trimOf(viewer);
         const veil = await viewer.locator('#editor-trim-layer').isVisible();
         return { ok: trim === null && !veil, detail: `cadrage ${trim}, voile ${veil}` };
-      }),
+      })),
     );
 
     await test('bouton : extérieur voilé et phrase sur l’original', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         await startTrim(viewer);
         const phrase = await viewer.locator('#editor-trim-note').innerText();
         for (const edge of ['nw']) {
@@ -774,7 +775,7 @@ async function groupBouton(context) {
     );
 
     await test('bouton : captures d’écran clair et sombre', () =>
-      inEditor(context, id, async (viewer) => {
+      cleanEditor(async (viewer) => {
         await startTrim(viewer);
         await handle(viewer, 'nw').focus();
         for (let i = 0; i < 25; i++) await viewer.keyboard.press('Shift+ArrowDown');
