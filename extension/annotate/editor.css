@@ -1,0 +1,318 @@
+/* Éditeur d'annotation : calque plein écran posé sur la page de résultats.
+   Les couleurs viennent de ui/tokens.css (clair et sombre) ; seules les 5 couleurs d'annotation sont écrites ailleurs (shapes.js). */
+
+.editor {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: var(--paper);
+}
+
+/* En-tête */
+
+.editor-head {
+  border-bottom: 1px solid var(--line);
+}
+
+.editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+}
+
+.editor-title {
+  flex: 1;
+  margin: 0;
+  overflow: hidden;
+  font-size: 17px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.editor-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-close svg {
+  width: 18px;
+  height: 18px;
+}
+
+.editor-history {
+  display: flex;
+  gap: 6px;
+}
+
+.editor-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper-raised);
+}
+
+.editor-icon:not(:disabled):hover {
+  border-color: var(--ink-muted);
+}
+
+.editor-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* « Tout effacer » : à part d'Annuler et Rétablir, et rouge au survol pour qu'on le remarque. */
+.editor-clear {
+  margin-left: 8px;
+}
+
+.editor-clear:not(:disabled):hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.editor-head .save-alert {
+  margin: 0 16px 10px;
+}
+
+/* Barre d'outils verticale */
+
+.editor-body {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  min-height: 0;
+}
+
+.editor-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 68px;
+  padding: 12px 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+
+.editor-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-group + .editor-group {
+  margin: 0 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.editor-tool,
+.editor-size {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+}
+
+.editor-tool svg,
+.editor-size svg {
+  width: 22px;
+  height: 22px;
+}
+
+.editor-tool:hover,
+.editor-size:not(:disabled):hover {
+  background: var(--paper-sunk);
+}
+
+.editor-tool[aria-pressed="true"],
+.editor-size[aria-pressed="true"] {
+  color: var(--primary-fg);
+  background: var(--primary-bg);
+}
+
+.editor-color {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px var(--ink-muted);
+}
+
+.editor-color[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 1px var(--ink-muted), 0 0 0 2px var(--paper), 0 0 0 4px var(--ink);
+}
+
+.editor-color:focus-visible {
+  outline-offset: 5px;
+}
+
+/* Fenêtre basse : la barre se resserre pour que les tailles restent visibles sans défiler. */
+@media (max-height: 760px) {
+  .editor-tools {
+    gap: 8px;
+    padding: 8px 0;
+  }
+
+  .editor-group {
+    gap: 4px;
+  }
+
+  .editor-group + .editor-group {
+    padding-top: 8px;
+  }
+
+  .editor-tool,
+  .editor-size {
+    width: 34px;
+    height: 34px;
+  }
+
+  .editor-tool svg,
+  .editor-size svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .editor-color {
+    width: 22px;
+    height: 22px;
+  }
+}
+
+/* Fenêtre très basse, ou bandeau d'alerte affiché : la barre se resserre encore. */
+@media (max-height: 660px) {
+  .editor-tools {
+    gap: 6px;
+    padding: 6px 0;
+  }
+
+  .editor-group {
+    gap: 2px;
+  }
+
+  .editor-group[data-kind="color"] {
+    gap: 6px;
+  }
+
+  .editor-group + .editor-group {
+    padding-top: 6px;
+  }
+
+  .editor-tool,
+  .editor-size {
+    width: 30px;
+    height: 30px;
+  }
+
+  .editor-tool svg,
+  .editor-size svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .editor-color {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+/* Zone de défilement : le fond (tuiles) défile, le calque d'annotations reste collé en haut. */
+
+.editor-scroll {
+  --focus: var(--cut);
+  position: relative;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  background: var(--mat);
+}
+
+.editor-stage-host {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 0;
+}
+
+.editor-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* `clip` et non `hidden` : un conteneur `hidden` défile quand le curseur d'un champ sort de la vue, et décalerait le calque du fond. */
+  overflow: clip;
+  cursor: crosshair;
+}
+
+.editor-stage[data-tool="text"] {
+  cursor: text;
+}
+
+/* Champ de saisie d'un texte : posé sur le texte à créer, à sa place et à sa taille (réglées par editor.js).
+   Il ne suit pas le thème de l'éditeur : la capture dessous est la même en clair et en sombre. Fond transparent et liseré du
+   texte final (--halo et --halo-width, posés par editor.js), pour le lire comme il sera exporté. */
+.editor-text {
+  position: absolute;
+  min-width: 2ch;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  font-weight: 700;
+  white-space: pre;
+  resize: none;
+  field-sizing: content;
+  color-scheme: light;
+  /* Le curseur prend la couleur du texte : il se voit sur la capture, claire ou sombre, comme le texte qu'il écrit. */
+  caret-color: currentColor;
+  background: transparent;
+  -webkit-text-stroke: var(--halo-width) var(--halo);
+  paint-order: stroke fill;
+}
+
+/* Anneau double : le jaune se voit sur une capture sombre, le vert profond sur une capture claire. */
+.editor-text:focus-visible {
+  outline: 2px solid var(--mat);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--cut);
+}
+
+.editor-page {
+  position: relative;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25), 0 18px 40px -18px rgb(0 0 0 / 0.65);
+}
+
+.editor-tile {
+  position: absolute;
+  left: 0;
+  width: 100%;
+}
+
+.editor-tile canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Coupe entre deux images : le halo sombre la garde lisible sur un fond clair comme sur un fond sombre. */
+.editor-cut {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  margin-top: -1px;
+  border-top: 2px dashed var(--cut);
+  filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.8));
+  pointer-events: none;
+}

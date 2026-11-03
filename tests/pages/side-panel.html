@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Panneau latéral figé</title>
+    <style>
+      html, body { margin: 0; background: #121418; }
+      .page-head { background: #0000ff; }
+      .layout { display: flex; align-items: flex-start; }
+      .form { position: relative; box-sizing: border-box; width: 50%; height: 1100px; padding: 40px; font: 17px/1.6 system-ui; background: #f1efea; }
+      .form-end { position: absolute; bottom: 0; left: 0; width: 100%; height: 40px; background: #00ccff; }
+      .panel { display: flex; flex-direction: column; justify-content: space-between; width: 50%; height: 100vh; background: #ffd84d; }
+      .panel-top { height: 60px; background: #ff00aa; }
+      .panel-bottom { height: 60px; background: #22aa44; }
+      .fixed .panel { position: fixed; top: 0; right: 0; }
+      .sticky .panel { position: sticky; top: 0; }
+      .pinned { position: fixed; right: 0; bottom: 0; width: 50%; }
+    </style>
+  </head>
+  <body>
+    <!-- Comme une page de paiement : formulaire à gauche, plus haut que l'écran ; à droite, un panneau de la hauteur de la fenêtre, qui ne défile pas.
+         Paramètres : mode (fixed ou sticky), head (hauteur d'un en-tête qui défile), form (hauteur du formulaire), foot=fixed (pied du panneau lui-même fixe). -->
+    <div class="page-head"></div>
+    <div class="layout">
+      <main class="form">Formulaire<div class="form-end"></div></main>
+      <aside class="panel">
+        <div class="panel-top"></div>
+        <div class="panel-bottom"></div>
+      </aside>
+    </div>
+    <script>
+      const query = new URLSearchParams(location.search);
+      document.body.className = query.get('mode');
+      document.querySelector('.page-head').style.height = `${query.get('head') ?? 0}px`;
+      if (query.get('form')) document.querySelector('.form').style.height = `${query.get('form')}px`;
+      if (query.get('foot') === 'fixed') document.querySelector('.panel-bottom').classList.add('pinned');
+    </script>
+  </body>
+</html>

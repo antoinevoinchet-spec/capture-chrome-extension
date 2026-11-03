@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Colonnes figées</title>
+    <style>
+      html, body { margin: 0; background: #fff; }
+      .row { display: flex; height: 40px; }
+      .first { position: sticky; left: 0; flex: 0 0 120px; background: #00ccff; }
+      .second { position: sticky; flex: 0 0 200px; background: #ff00aa; }
+      .rest { flex: 1; background: #f1efea; }
+    </style>
+  </head>
+  <body>
+    <!-- Comme un tableau : la deuxième colonne figée déclare sa position dans sa balise (left et top), que la capture doit lui rendre intacte. -->
+    <script>
+      for (let k = 0; k < 60; k++) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.innerHTML = '<div class="first"></div><div class="second" style="left: 120px; top: 5px"></div><div class="rest"></div>';
+        document.body.append(row);
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,284 @@
+/* Page du convertisseur : même en-tête, même colonne et même tapis que la page de résultats (viewer.css). */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.segmented button:disabled {
+  opacity: 0.55;
+}
+
+/* Taille */
+
+.resize-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.resize-field input {
+  width: 110px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper-raised);
+  font-variant-numeric: tabular-nums;
+}
+
+.resize-unit {
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.field-error {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.convert-note {
+  margin: 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* Zone de dépôt : les pointillés reprennent ceux des coupes de la page de résultats. */
+
+.convert-mat {
+  padding-top: 28px;
+}
+
+.drop {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 30px 24px;
+  border: 2px dashed var(--cut);
+  border-radius: 12px;
+  text-align: center;
+  background: rgb(0 0 0 / 0.14);
+  cursor: pointer;
+}
+
+.drop:hover,
+.drop.over {
+  background: rgb(244 197 66 / 0.14);
+}
+
+.drop:has(input:focus-visible) {
+  outline: 2px solid var(--cut);
+  outline-offset: 3px;
+}
+
+.drop-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.drop-formats {
+  font-size: 13px;
+  color: var(--on-mat-muted);
+}
+
+/* Liste */
+
+.list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 860px;
+  margin: 22px auto 8px;
+  font-size: 13px;
+  color: var(--on-mat-muted);
+}
+
+.list-clear {
+  padding: 2px 0;
+  border: 0;
+  font-size: 13px;
+  color: var(--on-mat);
+  background: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.items {
+  display: grid;
+  gap: 6px;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 12px 10px 10px;
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--paper-raised);
+  box-shadow: 0 8px 20px -14px rgb(0 0 0 / 0.7);
+}
+
+.item-thumb {
+  display: grid;
+  place-items: center;
+  width: 240px;
+  min-height: 120px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--paper-sunk);
+}
+
+.item-thumb img,
+.item-thumb canvas {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 240px;
+  max-height: 240px;
+}
+
+.item-thumb-note {
+  padding: 8px;
+  font-size: 12.5px;
+  text-align: center;
+  color: var(--ink-muted);
+}
+
+.item[data-status="error"] .item-thumb-note {
+  display: none;
+}
+
+.item-name {
+  display: block;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.item-detail {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.item[data-status="error"] .item-detail {
+  color: var(--danger);
+}
+
+.item[data-status="working"] .item-thumb {
+  animation: item-working 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes item-working {
+  to {
+    background: var(--cut);
+  }
+}
+
+.item-notice {
+  color: var(--danger);
+}
+
+.item-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.item-save {
+  padding: 5px 11px;
+  font-size: 13px;
+}
+
+.item-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--ink-muted);
+  background: transparent;
+}
+
+.item-icon:not(:disabled):hover {
+  color: var(--ink);
+  background: var(--paper-sunk);
+}
+
+.items :focus-visible {
+  outline-color: var(--ink);
+}
+
+@media (prefers-color-scheme: dark) {
+  .items :focus-visible {
+    outline-color: var(--cut);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .item[data-status="working"] .item-thumb {
+    animation: none;
+    background: var(--cut);
+  }
+}
+
+@media (max-width: 900px) {
+  .brand {
+    width: auto;
+  }
+
+  .layout {
+    grid-template-columns: 220px 1fr;
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  .convert-mat {
+    padding-inline: 14px;
+  }
+
+  .item {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+
+  .item-thumb {
+    width: 150px;
+  }
+
+  .item-thumb img,
+  .item-thumb canvas {
+    max-width: 150px;
+    max-height: 200px;
+  }
+
+  .item-actions {
+    grid-column: 2;
+    justify-content: flex-end;
+  }
+}

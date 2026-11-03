@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Titres de section collants</title>
+    <style>
+      html, body { margin: 0; background: #fff; }
+      h2 { position: sticky; top: 0; height: 40px; margin: 0; background: #ff00aa; }
+      .text { height: 560px; background: #f1efea; }
+    </style>
+  </head>
+  <body>
+    <script>
+      for (let k = 0; k < 10; k++) {
+        const section = document.createElement('section');
+        section.innerHTML = '<h2></h2><div class="text"></div>';
+        document.body.append(section);
+      }
+    </script>
+  </body>
+</html>

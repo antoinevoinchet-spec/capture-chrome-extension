@@ -1,0 +1,18 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Liste virtuelle</title>
+<style>
+html,body{margin:0;background:#fff}
+#list{position:relative;height:6000px;background:#f1efea}
+.sec{position:absolute;left:0;right:0;height:600px}
+.title{position:sticky;top:0;height:40px;background:#ff00aa}
+</style></head><body><div id="list"></div>
+<script>
+// Comme une liste virtuelle (messageries, boîtes mail) : seules les sections proches de l'écran existent.
+const list=document.getElementById('list');
+const on=new Map();
+function draw(){
+  const a=Math.floor((scrollY-100)/600), b=Math.floor((scrollY+innerHeight+100)/600);
+  for(const [k,el] of on) if(k<a||k>b){el.remove();on.delete(k);}
+  for(let k=Math.max(0,a);k<=Math.min(9,b);k++) if(!on.has(k)){const el=document.createElement('div');el.className='sec';el.style.top=k*600+'px';el.innerHTML='<div class="title"></div>';list.append(el);on.set(k,el);}
+}
+addEventListener('scroll',draw,{passive:true});draw();
+</script></body></html>

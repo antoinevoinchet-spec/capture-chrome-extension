@@ -1,0 +1,31 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Restauration</title>
+<style>
+:root{--t:7px;--o:.6}
+html,body{margin:0;background:#fff}
+.s{height:30px;width:200px;background:#ff00aa;margin-bottom:40px}
+.cls{position:sticky;top:3px}
+.f{position:fixed;width:80px;height:20px;background:#00ccff}
+.z{height:4000px;background:#f1efea}
+</style></head><body>
+<div class="s" data-t="s-simple" style="position: sticky; top: 10px"></div>
+<div class="s" data-t="s-important" style="position: sticky !important; top: 10px !important; left: 5px !important; right: auto !important; bottom: auto !important"></div>
+<div class="s cls" data-t="s-classe"></div>
+<div class="s cls" data-t="s-classe-style-autre" style="color: red"></div>
+<div class="s" data-t="s-inset" style="position: sticky; inset: 3px auto auto 4px"></div>
+<div class="s" data-t="s-inset-important" style="position: sticky; inset: 3px auto auto 4px !important"></div>
+<div class="s" data-t="s-inset-var" style="position: sticky; inset: var(--t) auto auto 0"></div>
+<div class="s" data-t="s-top-var" style="position: sticky; top: var(--t)"></div>
+<div class="s" data-t="s-logique" style="position: sticky; inset-block-start: 7px"></div>
+<div class="s" data-t="s-logique-2" style="position: sticky; inset-block: 7px auto; inset-inline-start: 1px"></div>
+<div class="f" data-t="f-haut" style="top: 0; left: 300px; opacity: .7; transition: opacity 1s"></div>
+<div class="f" data-t="f-haut-important" style="top: 0; left: 400px; opacity: .7 !important; transition: opacity 1s !important"></div>
+<div class="f" data-t="f-bas" style="bottom: 0; left: 300px; opacity: .8"></div>
+<div class="f" data-t="f-transition-duree" style="bottom: 0; left: 400px; transition-duration: 2s"></div>
+<div class="f" data-t="f-transition-delai" style="top: 0; left: 500px; transition-delay: 2s; transition-property: opacity"></div>
+<div class="f" data-t="f-opacite-var" style="bottom: 0; left: 500px; opacity: var(--o)"></div>
+<div class="f" data-t="f-sans-style"></div>
+<div class="z"></div>
+<script>
+scrollTo(0, +new URLSearchParams(location.search).get('y') || 0);
+</script>
+</body></html>

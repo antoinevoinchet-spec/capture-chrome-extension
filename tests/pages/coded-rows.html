@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Lignes codées</title>
+    <style>
+      html, body { margin: 0; background: #fff; }
+      .row { height: 4px; }
+      #head { height: 60px; top: 0; left: 0; right: 0; z-index: 5; background: #ff00aa; }
+      #bar { left: 0; right: 0; bottom: 0; z-index: 5; background: #00ccff; }
+    </style>
+  </head>
+  <body>
+    <!-- Chaque rangée de 4 points a sa propre couleur : une rangée cachée, répétée ou décalée se voit dans l'image.
+         Paramètres : total (hauteur de la page en points), head=sticky (en-tête collant), bar (fixed ou sticky, barre du bas), barH (sa hauteur). -->
+    <div id="head"></div>
+    <div id="rows"></div>
+    <script>
+      const query = new URLSearchParams(location.search);
+      const total = Number(query.get('total') ?? 2000);
+      const head = document.getElementById('head');
+      const sticky = query.get('head') === 'sticky';
+      if (sticky) head.style.position = 'sticky';
+      else head.remove();
+      const rows = document.createDocumentFragment();
+      for (let k = 0; k < Math.ceil((total - (sticky ? 60 : 0)) / 4); k++) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.style.background = `rgb(${(k * 37) % 256},${(k * 91) % 256},${(k * 13 + 128) % 256})`;
+        rows.append(row);
+      }
+      document.getElementById('rows').append(rows);
+      if (query.get('bar')) {
+        const bar = document.createElement('div');
+        bar.id = 'bar';
+        bar.style.position = query.get('bar');
+        bar.style.height = `${query.get('barH') ?? 50}px`;
+        document.body.append(bar);
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>En-tête rendu fixe par script</title>
+    <style>
+      body { margin: 0; font: 17px/1.6 Georgia, serif; color: #222; background: #fff; }
+      header { height: 60px; padding: 0 20px; font: 600 18px/60px system-ui; color: #fff; background: #ff00aa; }
+      header.fixed { position: fixed; top: 0; right: 0; left: 0; }
+      main { max-width: 760px; margin: 0 auto; padding: 20px; }
+    </style>
+  </head>
+  <body>
+    <header id="header">En-tête qui devient fixe après 100 points de défilement</header>
+    <main id="main"></main>
+    <script>
+      const main = document.getElementById('main');
+      for (let p = 1; p <= 80; p++) {
+        const para = document.createElement('p');
+        para.textContent = 'Paragraphe ' + p + '. ' + 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. '.repeat(4);
+        main.append(para);
+      }
+      // Comme beaucoup de thèmes WordPress : l'en-tête passe en position fixe une fois la page défilée.
+      const header = document.getElementById('header');
+      addEventListener('scroll', () => {
+        const fixed = scrollY > 100;
+        header.classList.toggle('fixed', fixed);
+        document.body.style.paddingTop = fixed ? '60px' : '0';
+      });
+    </script>
+  </body>
+</html>

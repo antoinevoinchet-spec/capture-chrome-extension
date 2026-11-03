@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Éléments fixes</title>
+    <style>
+      html, body { margin: 0; background: #fff; }
+      .main { position: relative; height: 3000px; background: #f1efea; }
+      .main::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 40px; background: #00ccff; }
+    </style>
+  </head>
+  <body>
+    <main class="main" id="main"></main>
+    <script>
+      // Une page longue et l'élément fixe choisi par le paramètre k. Le rose est ce qui doit rester hors de l'image quand c'est une petite carte du bas.
+      const kind = new URLSearchParams(location.search).get('k');
+      const add = (html) => {
+        const holder = document.createElement('div');
+        holder.innerHTML = html;
+        document.body.append(...holder.children);
+      };
+      const card = 'width: 300px; height: 120px; background: #ff00aa';
+      const banner = '<div style="position: fixed; left: 0; right: 0; bottom: 0; height: 100px; background: #ff00aa"></div>';
+      const innerFoot = '<div style="position: fixed; right: 0; bottom: 0; width: 33%; height: 120px; background: #22aa44"></div>';
+      const stickyHead = '<div style="position: sticky; top: 0; height: 60px; background: #0000ff; z-index: 4"></div>';
+      const cases = {
+        bubble: `<div style="position: fixed; bottom: 20px; right: 20px; ${card}"></div>`,
+        intercom: `<div style="position: fixed; z-index: 999; width: 0; height: 0; top: 0; left: 0"><div style="position: fixed; bottom: 20px; right: 20px; ${card}"></div></div>`,
+        overlaywrap: `<div style="position: fixed; inset: 0; pointer-events: none; z-index: 9"><div style="position: fixed; bottom: 20px; right: 20px; ${card}"></div></div>`,
+        portalcookie: '<div style="position: fixed; z-index: 9; top: 0; left: 0; width: 100%; height: 0"><div style="position: fixed; left: 0; right: 0; bottom: 0; height: 100px; background: #ff00aa"></div></div>',
+        header: '<div style="position: fixed; top: 0; left: 0; right: 0; height: 60px; background: #0000ff"></div>',
+        drawer: '<div style="position: fixed; left: 0; right: 0; bottom: 0; height: 60vh; background: #ff00aa"></div>',
+        modal15: '<div style="position: fixed; top: 15vh; left: 5%; right: 5%; bottom: 0; background: #ff00aa"></div>',
+        mainfixed100: '<div style="position: fixed; top: 0; left: 0; right: 0; height: 100px; background: #0000ff"></div><div style="position: fixed; top: 100px; left: 0; right: 0; bottom: 0; background: #ffd84d"></div>',
+        sidewide2: '<div style="position: fixed; top: 100px; right: 0; width: 88%; bottom: 0; background: #ffd84d"></div>',
+        footsib: '<div style="position: fixed; top: 0; right: 0; width: 50%; height: 100vh; background: #ffd84d"></div><div style="position: fixed; right: 0; bottom: 0; width: 50%; height: 60px; background: #22aa44"></div>',
+        // Un bandeau reste un bandeau, même quand la page contient un grand bloc invisible ou pleine largeur.
+        closedmenu: `<div style="position: fixed; inset: 0; background: #fff; opacity: 0; visibility: hidden"></div>${banner}`,
+        closedmenu2: `<div style="position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none"></div>${banner}`,
+        panelcookie: `<div style="position: fixed; top: 0; right: 0; bottom: 100px; width: 33%; background: #ffd84d"></div>${banner}`,
+        closeddrawer: `<div style="position: fixed; top: 0; right: 20px; bottom: 0; width: 300px; background: #fff; opacity: 0"></div><div style="position: fixed; bottom: 20px; right: 20px; ${card}"></div>`,
+        closeddrawer2: `<div style="opacity: 0"><div style="position: fixed; top: 0; right: 20px; bottom: 0; width: 300px; background: #fff"></div></div><div style="position: fixed; bottom: 20px; right: 20px; ${card}"></div>`,
+        // Une bulle reste une bulle, à côté d'un panneau, dans un emballage à sa taille ou dans un calque presque vide.
+        panelbubble: `<div style="position: fixed; top: 0; left: 0; bottom: 0; width: 33%; background: #ffd84d"></div><div style="position: fixed; bottom: 20px; right: 20px; ${card}"></div>`,
+        wrapsized: '<div style="position: fixed; bottom: 20px; right: 20px; width: 300px; height: 120px"><div style="height: 100%; background: #ff00aa"></div></div>',
+        overlaywrap2: `<div style="position: fixed; inset: 0; pointer-events: none"><div style="height: 40px; background: #ffd84d"></div><div style="position: fixed; bottom: 20px; right: 20px; ${card}"></div></div>`,
+        // Le pied d'un panneau garde le Total : fond porté par un bloc intérieur, ou pied posé juste sous le panneau.
+        childsurface: `<aside style="position: fixed; top: 0; right: 0; bottom: 0; width: 33%"><div style="height: 100%; background: #ffd84d"></div>${innerFoot}</aside>`,
+        childsurface2: `<aside style="position: fixed; top: 0; right: 0; bottom: 0; width: 33%"><div style="height: 100%"><div style="height: 40%; background: #ffd84d"></div><div style="height: 60%; background: #ffeeaa"></div></div>${innerFoot}</aside>`,
+        footbelow: `<div style="position: fixed; top: 0; right: 0; bottom: 120px; width: 33%; background: #ffd84d"></div>${innerFoot}`,
+      };
+      const rows = Array.from({ length: 200 }, (_, row) => `<tr><td style="height: 20px; background: ${row % 2 ? '#f1efea' : '#dfeaf1'}"></td></tr>`).join('');
+      const layouts = {
+        // Grand visuel collant pleine largeur : ce n'est pas un panneau, le bandeau du bas reste hors image.
+        herocookie: `<div style="position: sticky; top: 0; height: 100vh; background: #123456"></div><main class="main"></main>${banner}`,
+        // Ces parents n'ont pas de boîte propre : leur overflow est sans effet, et l'élément colle bien à la page.
+        contents: `<div style="display: contents; overflow: hidden">${stickyHead}<main class="main"></main></div>`,
+        inlinehidden: `<span style="overflow: hidden">${stickyHead}</span><main class="main"></main>`,
+        rowhidden: `<table style="width: 100%; border-spacing: 0"><thead><tr style="overflow: hidden"><th style="position: sticky; top: 0; height: 40px; background: #0000ff"></th></tr></thead><tbody>${rows}</tbody></table>`,
+      };
+      if (layouts[kind]) {
+        document.body.innerHTML = layouts[kind];
+      } else if (kind === 'stickypanelfixedfoot') {
+        document.body.innerHTML = '<div style="display: flex; align-items: flex-start"><main class="main" style="width: 50%"></main><aside style="position: sticky; top: 0; width: 50%; height: 100vh; background: #ffd84d"><div style="height: 60px; background: #ff00aa"></div><div style="position: fixed; right: 0; bottom: 0; width: 50%; height: 60px; background: #22aa44"></div></aside></div>';
+      } else {
+        add(cases[kind]);
+      }
+    </script>
+  </body>
+</html>

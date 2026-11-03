@@ -1,0 +1,135 @@
+/* Palette « tapis de découpe » partagée par la fenêtre de l'icône et la page des captures. */
+:root {
+  color-scheme: light dark;
+  --mat: #23453b;
+  --mat-deep: #1a372e;
+  --mat-line: rgb(255 255 255 / 0.05);
+  --mat-line-strong: rgb(255 255 255 / 0.11);
+  --on-mat: #e8efeb;
+  --on-mat-muted: #a9bdb4;
+  --cut: #f4c542;
+  --paper: #f5f7f5;
+  --paper-raised: #ffffff;
+  --paper-sunk: #e7ece8;
+  --ink: #15211d;
+  --ink-muted: #56655f;
+  --line: #d2dad5;
+  --danger: #b3261e;
+  --primary-bg: var(--mat);
+  --primary-bg-hover: var(--mat-deep);
+  --primary-fg: #ffffff;
+  --focus: var(--ink);
+  --toast-success: #8be3a9;
+  --font: "Avenir Next", Avenir, system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #131a17;
+    --paper-raised: #1b2420;
+    --paper-sunk: #0e1412;
+    --ink: #e6ede9;
+    --ink-muted: #9aaaa3;
+    --line: #2a3631;
+    --mat: #1d3a31;
+    --mat-deep: #163027;
+    --danger: #f2b8b5;
+    --primary-bg: var(--cut);
+    --primary-bg-hover: #ffd35c;
+    --primary-fg: #15211d;
+    --focus: var(--cut);
+    --toast-success: #1f7a46;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  font: 15px/1.45 var(--font);
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  border: 0;
+  border-radius: 9px;
+  padding: 9px 16px;
+  font-weight: 600;
+  color: var(--primary-fg);
+  background: var(--primary-bg);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: var(--primary-bg-hover);
+}
+
+.btn-secondary {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 8px 15px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--paper-raised);
+}
+
+.btn-secondary:not(:disabled):hover {
+  border-color: var(--ink-muted);
+}
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper-sunk);
+}
+
+.segmented button {
+  flex: 1;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  background: transparent;
+}
+
+.segmented button[aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--paper-raised);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgb(0 0 0 / 0.12);
+}
+
+.logo {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}

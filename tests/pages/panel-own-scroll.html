@@ -1,0 +1,15 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Panneau a defilement propre</title>
+<style>
+html,body{margin:0;background:#121418}
+.layout{display:flex;align-items:flex-start}
+.form{width:50%;height:3000px;background:#f1efea}
+.panel{position:sticky;top:0;width:50%;height:100vh;overflow-y:auto;background:#ffd84d}
+.lines{height:1400px;background:#00ccff}
+.ptop{position:sticky;top:0;height:60px;background:#ff00aa}
+.pfoot{position:sticky;bottom:0;height:80px;background:#22aa44}
+.fixedmode .panel{position:fixed;right:0}
+</style></head><body>
+<div class="layout"><main class="form"></main>
+<aside class="panel"><div class="ptop"></div><div class="lines"></div><div class="pfoot"></div></aside></div>
+<script>if(new URLSearchParams(location.search).get('mode')==='fixed')document.body.className='fixedmode';</script>
+</body></html>

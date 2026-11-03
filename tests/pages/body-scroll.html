@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Page dont le corps défile</title>
+    <style>
+      html { height: 100%; overflow: hidden; }
+      body { height: 100%; margin: 0; overflow: auto; font: 17px/1.6 Georgia, serif; color: #222; background: #fff; }
+      main { max-width: 760px; margin: 0 auto; padding: 20px; }
+    </style>
+  </head>
+  <body>
+    <main id="main"></main>
+    <script>
+      const main = document.getElementById('main');
+      for (let p = 1; p <= 60; p++) {
+        const para = document.createElement('p');
+        para.textContent = 'Paragraphe ' + p + '. ' + 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. '.repeat(4);
+        main.append(para);
+      }
+    </script>
+  </body>
+</html>

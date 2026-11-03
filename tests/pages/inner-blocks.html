@@ -1,0 +1,22 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Interieur</title>
+<style>
+html,body{margin:0;background:#fff}
+.long{height:3000px;background:#f1efea}
+.box{height:300px;width:600px;overflow:auto;background:#fff;position:relative}
+.content{height:1500px;background:#00ccff}
+.thead{position:sticky;top:0;height:40px;background:#ff00aa}
+.tfoot{position:sticky;bottom:0;height:40px;background:#22aa44}
+.wide{overflow-x:auto;width:600px;background:#fff}
+.table{display:flex;width:2000px;height:200px}
+.cleft{position:sticky;left:0;width:150px;flex:none;background:#ff00aa}
+.cmid{flex:1;background:#00ccff}
+.cright{position:sticky;right:0;width:150px;flex:none;background:#22aa44}
+</style></head><body>
+<div id="v" class="box" style="display:none"><div class="thead"></div><div class="content"></div><div class="tfoot"></div></div>
+<div id="h" class="wide" style="display:none"><div class="table"><div class="cleft"></div><div class="cmid"></div><div class="cright"></div></div></div>
+<div class="long"></div>
+<script>
+const q=new URLSearchParams(location.search);
+if(q.get('v')!==null){const e=document.getElementById('v');e.style.display='';e.scrollTop=+q.get('v');}
+if(q.get('h')!==null){const e=document.getElementById('h');e.style.display='';e.scrollLeft=+q.get('h');}
+</script></body></html>
