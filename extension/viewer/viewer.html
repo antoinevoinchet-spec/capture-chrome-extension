@@ -27,7 +27,17 @@
         <p id="save-alert" class="save-alert" role="alert" hidden></p>
       </div>
       <div class="top-actions">
+        <span id="export-progress" class="export-progress" role="status" hidden></span>
+        <button id="export-cancel" class="btn-secondary" type="button" hidden>Annuler</button>
         <button id="copy-current" class="btn-secondary" type="button" disabled>Copier l’image</button>
+        <div class="export-wrap">
+          <button id="export" class="btn-secondary" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu" disabled>Exporter</button>
+          <div id="export-menu" class="export-menu" role="menu" aria-label="Exporter" aria-describedby="export-note" hidden>
+            <button type="button" role="menuitem" data-export="pdf">PDF</button>
+            <button type="button" role="menuitem" data-export="zip">Zip des images</button>
+            <p id="export-note" class="export-note">PDF : plus léger, texte un peu moins net. Zip en PNG : sans perte.</p>
+          </div>
+        </div>
         <button id="download-all" class="btn-primary" type="button" disabled>Tout télécharger</button>
       </div>
     </header>

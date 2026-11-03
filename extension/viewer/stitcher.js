@@ -154,16 +154,21 @@ export class Stitcher {
   renderPart(part, type = 'image/png', quality = 0.92) {
     return this.enqueue(async () => {
       const canvas = new OffscreenCanvas(this.record.width, part.height);
-      const ctx = canvas.getContext('2d');
-      if (type !== 'image/png') {
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      try {
+        const ctx = canvas.getContext('2d');
+        if (type !== 'image/png') {
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        await this.draw(ctx, part.top, part.height);
+        await this.overlay?.(ctx, part.top, part.height, 1);
+        const blob = await canvas.convertToBlob({ type, quality });
+        if (blob.type !== type) throw new Error(`Chrome ne sait pas produire ce format (${type}).`);
+        return blob;
+      } finally {
+        // Libère tout de suite : une partie haute pèse plus de 100 Mo, et un export en enchaîne des dizaines.
+        canvas.width = canvas.height = 0;
       }
-      await this.draw(ctx, part.top, part.height);
-      await this.overlay?.(ctx, part.top, part.height, 1);
-      const blob = await canvas.convertToBlob({ type, quality });
-      if (blob.type !== type) throw new Error(`Chrome ne sait pas produire ce format (${type}).`);
-      return blob;
     });
   }
 

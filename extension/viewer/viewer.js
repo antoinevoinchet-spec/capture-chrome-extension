@@ -2,7 +2,9 @@ import { openEditor } from '../annotate/editor.js';
 import { avoidRanges, drawAnnotations } from '../annotate/render.js';
 import { CaptureGone, deleteCapture, getAnnotations, getCapture, listAnnotatedIds, listCaptures, saveAnnotations } from '../lib/db.js';
 import { FORMATS, SPLITS, loadSettings, saveSettings } from '../lib/settings.js';
+import { exportPdf, exportZip } from './export.js';
 import { Stitcher } from './stitcher.js';
+import { ZipTooBig } from './zip.js';
 
 // Largeur d'affichage maximale d'un aperçu, en points.
 const PREVIEW_WIDTH = 820;
@@ -31,6 +33,10 @@ const els = {
   editorAlert: document.getElementById('editor-alert'),
   copyCurrent: document.getElementById('copy-current'),
   downloadAll: document.getElementById('download-all'),
+  export: document.getElementById('export'),
+  exportMenu: document.getElementById('export-menu'),
+  exportCancel: document.getElementById('export-cancel'),
+  exportProgress: document.getElementById('export-progress'),
   split: document.getElementById('split'),
   splitHint: document.getElementById('split-hint'),
   format: document.getElementById('format'),
@@ -75,6 +81,9 @@ let pendingSaves = 0;
 let failedSave = null;
 // Nombre de changements de capture en cours (ouverture d'une autre, suppression) : tant qu'il y en a, « Annoter » est refusé.
 let leaving = 0;
+// Un export est en cours : son AbortController, et le dernier message d'un autre onglet, appliqué seulement à la fin (l'export reste figé).
+let exportControl = null;
+let followLater = null;
 // Vignettes de l'historique, dessinées l'une après l'autre.
 let thumbQueue = Promise.resolve();
 // Prévient les autres pages de résultats ouvertes quand des annotations sont enregistrées.
@@ -103,6 +112,7 @@ async function init() {
   updateFormatHint();
   els.downloadAll.addEventListener('click', () => downloadParts(parts.map((_, i) => i), els.downloadAll));
   els.copyCurrent.addEventListener('click', () => copyPart(currentIndex, els.copyCurrent));
+  setupExport();
   for (const target of [els.mat, window]) target.addEventListener('scroll', scheduleCurrent, { passive: true });
   window.addEventListener('resize', scheduleCurrent);
   setupCopyGestures();
@@ -203,7 +213,7 @@ function setAnnotations(items) {
 // Ouvre l'éditeur sur l'image `index`. Un seul éditeur à la fois par capture, tous onglets confondus : deux éditeurs s'écraseraient
 // l'un l'autre sans prévenir, et un masque pourrait disparaître. Chrome libère de lui-même le verrou d'un onglet qui se ferme.
 function annotate(index) {
-  if (!parts[index] || editing || locking || planning || leaving) return;
+  if (!parts[index] || editing || locking || planning || leaving || exportControl) return;
   const captureId = record.id;
   const top = parts[index].top;
   // Verrou encore détenu (écriture ratée ou en cours) : cette page garde la main sans le redemander.
@@ -342,6 +352,10 @@ function showSaveAlert(message = '') {
 // ses aperçus et ses exports aussi, sinon ils laisseraient voir ce qu'on vient de masquer. Un éditeur ouvert ici est déjà parti de
 // cette liste : il détient le verrou, aucun autre onglet n'écrit plus (voir annotate).
 async function followOtherPage({ captureId, items }) {
+  if (exportControl && record?.id === captureId) {
+    followLater = { captureId, items };
+    return;
+  }
   markAnnotated(captureId, items.length > 0);
   const thumb = historyItem(captureId)?.querySelector('.history-thumb');
   const capture = thumb && (await getCapture(captureId));
@@ -358,6 +372,7 @@ async function layoutParts() {
   document.body.dataset.ready = 'false';
   els.parts.setAttribute('aria-busy', 'true');
   els.downloadAll.disabled = true;
+  els.export.disabled = true;
   els.copyCurrent.disabled = true;
 
   const split = SPLITS[settings.split];
@@ -385,6 +400,7 @@ async function layoutParts() {
       : `Une seule image de ${px(record.height)} px de haut.`;
   els.downloadAll.textContent = parts.length > 1 ? `Tout télécharger (${parts.length} images)` : 'Télécharger l’image';
   els.downloadAll.disabled = false;
+  els.export.disabled = false;
 
   const canvasWidth = Math.min(record.width, Math.round(PREVIEW_WIDTH * devicePixelRatio));
   const canvases = [];
@@ -414,7 +430,7 @@ async function layoutParts() {
 // Grise ou rend les boutons « Annoter » des images et l'entrée du menu du clic droit : refusés pendant un recalcul des coupes
 // ou un changement de capture.
 function setAnnotateEnabled() {
-  const enabled = !planning && !leaving;
+  const enabled = !planning && !leaving && !exportControl;
   for (const el of [...els.parts.querySelectorAll('.annotate'), els.menu.querySelector('[data-action="annotate"]')]) el.disabled = !enabled;
 }
 
@@ -429,7 +445,7 @@ function partCard(index, canvas) {
   const actions = document.createElement('span');
   actions.className = 'part-actions';
   const copy = button('Copier', 'ghost', () => copyPart(index, copy));
-  const save = button('Télécharger', 'ghost', () => downloadParts([index], save));
+  const save = button('Télécharger', 'ghost part-save', () => downloadParts([index], save));
   const note = button('Annoter', 'ghost annotate', () => annotate(index));
   actions.append(copy, save, note);
   caption.append(name, size, actions);
@@ -480,6 +496,111 @@ async function downloadParts(indices, trigger) {
       trigger.disabled = false;
     }
     busy = false;
+  }
+}
+
+function setupExport() {
+  els.export.addEventListener('click', () => (els.exportMenu.hidden ? openExportMenu() : closeExportMenu()));
+  els.exportCancel.addEventListener('click', () => exportControl?.abort());
+  els.exportMenu.addEventListener('click', (event) => {
+    const kind = event.target.closest('[data-export]')?.dataset.export;
+    if (kind) startExport(kind);
+  });
+  els.exportMenu.addEventListener('keydown', (event) => {
+    const items = [...els.exportMenu.querySelectorAll('button')];
+    const at = items.indexOf(document.activeElement);
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+    } else if (event.key === 'Escape') {
+      closeExportMenu();
+      els.export.focus();
+    } else if (event.key === 'Tab') {
+      closeExportMenu();
+    }
+  });
+  document.addEventListener('pointerdown', (event) => {
+    if (!els.exportMenu.hidden && !els.exportMenu.contains(event.target) && !els.export.contains(event.target)) closeExportMenu();
+  });
+  window.addEventListener('blur', closeExportMenu);
+}
+
+function openExportMenu() {
+  els.exportMenu.hidden = false;
+  els.export.setAttribute('aria-expanded', 'true');
+  els.exportMenu.querySelector('button').focus();
+}
+
+function closeExportMenu() {
+  els.exportMenu.hidden = true;
+  els.export.setAttribute('aria-expanded', 'false');
+}
+
+// Pendant un export, la capture, ses coupes et ses annotations ne bougent plus : tout ce qui les changerait est grisé.
+function setExporting(control) {
+  exportControl = control;
+  busy = Boolean(control);
+  const on = Boolean(control);
+  for (const el of els.split.querySelectorAll('button')) el.disabled = on;
+  for (const el of els.history.querySelectorAll('button')) el.disabled = on;
+  for (const el of [...els.parts.querySelectorAll('.part-save'), els.menu.querySelector('[data-action="download"]')]) el.disabled = on;
+  els.downloadAll.disabled = on;
+  els.export.hidden = on;
+  els.exportCancel.hidden = !on;
+  els.exportProgress.hidden = !on;
+  els.exportProgress.textContent = '';
+  setAnnotateEnabled();
+}
+
+async function startExport(kind) {
+  closeExportMenu();
+  if (exportControl) return;
+  if (busy) {
+    toast('Un téléchargement est en cours : attends la fin, puis relance l’export.');
+    return;
+  }
+  if (!parts.length || planning || leaving || editing || locking) return;
+  // Copies locales : quoi qu'il arrive ensuite à la page, le fichier décrit ce qui était affiché au départ.
+  const frozen = { stitcher, parts: [...parts], format: FORMATS[settings.format], base: baseName() };
+  const names = frozen.parts.map((_, index) => fileName(index, frozen.format.ext).split('/').pop());
+  const label = kind === 'pdf' ? 'PDF' : 'Zip';
+  const control = new AbortController();
+  let reached = 0;
+  const onProgress = (done, total) => {
+    reached = done;
+    els.exportProgress.textContent = `Partie ${done} sur ${total}`;
+  };
+  setExporting(control);
+  els.exportCancel.focus();
+  try {
+    const blob =
+      kind === 'pdf'
+        ? await exportPdf({ stitcher: frozen.stitcher, parts: frozen.parts, signal: control.signal, onProgress })
+        : await exportZip({ stitcher: frozen.stitcher, parts: frozen.parts, format: frozen.format.type, names, signal: control.signal, onProgress });
+    if (control.signal.aborted) throw control.signal.reason;
+    const id = await saveBlob(blob, `${DOWNLOAD_FOLDER}/${frozen.base}/${frozen.base}.${kind}`);
+    toast(`${label} enregistré dans Téléchargements › ${DOWNLOAD_FOLDER} › ${frozen.base}.`, {
+      success: true,
+      action: { label: 'Afficher dans le Finder', run: () => chrome.downloads.show(id) },
+    });
+  } catch (err) {
+    if (control.signal.aborted) {
+      toast('Export annulé : aucun fichier créé.');
+    } else if (err instanceof ZipTooBig) {
+      toast('Ce zip dépasserait la limite de 4 Go ou 65 535 images : aucun fichier créé. Choisis le format JPG, ou exporte en PDF.');
+    } else {
+      console.error(err);
+      toast(`L’export s’est arrêté à la partie ${reached} : aucun fichier créé. Réessaie, ou choisis un découpage plus court.`);
+    }
+  } finally {
+    const hadFocus = document.activeElement === els.exportCancel || document.activeElement === document.body;
+    setExporting(null);
+    if (hadFocus) els.export.focus();
+    if (followLater) {
+      const data = followLater;
+      followLater = null;
+      followOtherPage(data).catch((err) => console.error(err));
+    }
   }
 }
 
@@ -773,6 +894,7 @@ function showEmpty(title, message) {
   els.parts.removeAttribute('aria-busy');
   els.downloadAll.textContent = 'Tout télécharger';
   els.downloadAll.disabled = true;
+  els.export.disabled = true;
   els.copyCurrent.textContent = 'Copier l’image';
   els.copyCurrent.disabled = true;
   const box = document.createElement('div');

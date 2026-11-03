@@ -55,6 +55,53 @@ body {
   gap: 8px;
 }
 
+/* Menu « Exporter » et progression de l'export. */
+.export-wrap {
+  position: relative;
+}
+
+.export-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  width: 280px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper-raised);
+  box-shadow: 0 14px 34px -12px rgb(0 0 0 / 0.45);
+}
+
+.export-menu button {
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  font-size: 14px;
+  text-align: left;
+  background: transparent;
+}
+
+.export-menu button:hover,
+.export-menu button:focus-visible {
+  outline: none;
+  background: var(--paper-sunk);
+}
+
+.export-note {
+  margin: 4px 10px 6px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+.export-progress {
+  align-self: center;
+  font-size: 13px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Échec d'enregistrement des annotations : le même bandeau dans l'en-tête de la page et dans celui de l'éditeur. */
 .save-alert {
   margin: 6px 0 0;

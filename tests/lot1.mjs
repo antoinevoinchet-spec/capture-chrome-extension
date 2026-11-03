@@ -3,10 +3,11 @@
 // Usage : node lot1.mjs <dossier de sortie> [base|paste|zip|export|export-long|webimage] [motif]
 
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { EXTENSION, MANIFEST_EXPECTED, check, extensionPage, launch, prepareExtension, results } from './lib.mjs';
+import { EXTENSION, MANIFEST_EXPECTED, check, extensionPage, launch, prepareExtension, results, seedCapture } from './lib.mjs';
 
 const run = promisify(execFile);
 const WORK = path.resolve(process.argv[2] ?? path.join(import.meta.dirname, 'out-lot1'));
@@ -297,8 +298,6 @@ async function groupZip(context) {
     });
     await test('zip : le lecteur Python relit noms et octets', async () => {
       const entries = await readZip(file);
-      const { createHash } = await import('node:crypto');
-      const sha = (data) => createHash('sha256').update(data).digest('hex');
       const big = Buffer.alloc(3 * 1024 * 1024);
       for (let i = 0; i < big.length; i++) big[i] = (i * 31 + (i >> 8)) & 255;
       const expected = [Buffer.from([1, 2, 3, 4]), Buffer.from('contenu accentué'), big].map(sha);
@@ -351,6 +350,590 @@ async function groupZip(context) {
   }
 }
 
+// --- Menu Exporter, PDF et zip ---
+
+const sha = (data) => crypto.createHash('sha256').update(data).digest('hex');
+
+async function openResults(context, id) {
+  const page = await extensionPage(context, `viewer/viewer.html?id=${id}`);
+  await page.waitForSelector('body[data-ready="true"]', { timeout: 120_000 });
+  return page;
+}
+
+// Remplace le téléchargement par un relevé (nom et adresse du fichier).
+const spyDownloads = (page) =>
+  page.evaluate(() => {
+    window.saved = [];
+    chrome.downloads.download = async (options) => {
+      window.saved.push(options);
+      return window.saved.length;
+    };
+  });
+
+async function savedBytes(page, index) {
+  const base64 = await page.evaluate(async (index) => {
+    const bytes = new Uint8Array(await (await fetch(window.saved[index].url)).arrayBuffer());
+    let text = '';
+    for (let i = 0; i < bytes.length; i += 32768) text += String.fromCharCode(...bytes.subarray(i, i + 32768));
+    return btoa(text);
+  }, index);
+  return Buffer.from(base64, 'base64');
+}
+
+const savedNames = (page) => page.evaluate(() => window.saved.map((entry) => entry.filename));
+
+// Ralentit le rendu des parties, le temps d'agir en plein export.
+const slowRendering = (page, ms = 500) =>
+  page.evaluate(async (ms) => {
+    const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+    const real = Stitcher.prototype.renderPart;
+    Stitcher.prototype.renderPart = function (...args) {
+      return real.apply(this, args).then((blob) => new Promise((resolve) => setTimeout(() => resolve(blob), ms)));
+    };
+  }, ms);
+
+async function chooseExport(page, kind) {
+  await page.locator('#export').click();
+  await page.locator(`#export-menu [data-export="${kind}"]`).click();
+}
+
+const waitIdle = (page) => page.waitForFunction(() => !document.getElementById('export').hidden && document.getElementById('export-cancel').hidden, undefined, { timeout: 180_000 });
+
+// Lance un export et rend ses octets et son nom.
+async function exported(page, kind) {
+  await spyDownloads(page);
+  await chooseExport(page, kind);
+  await waitIdle(page);
+  const [filename] = await savedNames(page);
+  return { filename, bytes: filename ? await savedBytes(page, 0) : null };
+}
+
+async function pdfInfo(file) {
+  const { stdout } = await run('pdfinfo', ['-box', '-f', '1', '-l', '999', file]);
+  const pages = [...stdout.matchAll(/Page\s+\d+ MediaBox:\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/g)].map((match) => ({ width: Number(match[3]), height: Number(match[4]) }));
+  return { text: stdout, pages };
+}
+
+// Une page du PDF, rendue à 96 points par pouce : un pixel de la partie vaut un pixel du rendu. Rend le PNG en octets.
+async function pdfPagePng(file, number, prefix) {
+  await run('pdftoppm', ['-r', '96', '-f', String(number), '-l', String(number), '-singlefile', '-png', file, prefix]);
+  return fs.readFile(`${prefix}.png`);
+}
+
+const readPixels = (page, bytes, points) =>
+  page.evaluate(
+    async ({ base64, points }) => {
+      const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))]));
+      const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(bitmap, 0, 0);
+      return { width: bitmap.width, height: bitmap.height, pixels: points.map(([x, y]) => [...ctx.getImageData(x, y, 1, 1).data]) };
+    },
+    { base64: bytes.toString('base64'), points },
+  );
+
+const isNear = (pixel, rgb, tolerance = 28) => rgb.every((value, channel) => Math.abs(pixel[channel] - value) <= tolerance);
+
+function baseOf(filename) {
+  return filename.split('/').pop().replace(/\.\w+$/, '');
+}
+
+async function groupExport(context) {
+  console.log('\n— Menu Exporter, PDF et zip');
+  const dir = path.join(WORK, 'export');
+  await fs.mkdir(dir, { recursive: true });
+  const setup = await extensionPage(context, 'popup/popup.html');
+  await setup.evaluate(() => chrome.storage.sync.set({ split: 'medium', format: 'png' }));
+  const tall = await seedCapture(setup, { heightPoints: 12000 });
+  const single = await seedCapture(setup, { heightPoints: 1000 });
+  const annotated = await seedCapture(setup, { heightPoints: 12000 });
+  const MASK = { id: 'm1', type: 'mask', color: 'red', size: 'm', x: 400, y: 10000, width: 900, height: 300, fill: '#606060' };
+  await setup.evaluate(
+    async ({ id, mask }) => {
+      const { saveAnnotations } = await import(chrome.runtime.getURL('lib/db.js'));
+      await saveAnnotations(id, [mask]);
+    },
+    { id: annotated, mask: MASK },
+  );
+  const session = async (id, body) => {
+    const page = await openResults(context, id);
+    try {
+      return await body(page);
+    } finally {
+      await page.close();
+    }
+  };
+
+  const pdfFile = path.join(dir, 'tall.pdf');
+  let pdfName = '';
+  await session(tall, async (page) => {
+    const { filename, bytes } = await exported(page, 'pdf');
+    pdfName = filename ?? '';
+    if (bytes) await fs.writeFile(pdfFile, bytes);
+  });
+  const partCount = await session(tall, (page) => page.evaluate(() => document.querySelectorAll('figure.part').length));
+
+  await test('pdf : une page par partie', async () => {
+    const { pages } = await pdfInfo(pdfFile);
+    return { ok: partCount > 1 && pages.length === partCount, detail: `${pages.length} pages, ${partCount} parties` };
+  });
+  await test('pdf : MediaBox au plus 14 400', async () => {
+    const { pages } = await pdfInfo(pdfFile);
+    return { ok: pages.length > 0 && pages.every((box) => box.width <= 14400 && box.height <= 14400), detail: pages.map((box) => `${box.width}×${box.height}`).join(' ') };
+  });
+  await test('pdf : l’annotation est rendue à sa place', () =>
+    session(annotated, async (page) => {
+      const { bytes } = await exported(page, 'pdf');
+      const file = path.join(dir, 'annotated.pdf');
+      await fs.writeFile(file, bytes);
+      const { pages } = await pdfInfo(file);
+      // Le masque (y = 10 000 px de la capture) tombe dans la deuxième page. Hauteurs en pixels : points / 0,75.
+      const firstHeight = Math.round(pages[0].height / 0.75);
+      const y = MASK.y + 150 - firstHeight;
+      const png = await pdfPagePng(file, 2, path.join(dir, 'annotated-p2'));
+      const { width, pixels } = await readPixels(page, png, [[MASK.x + 450, y], [MASK.x - 40, y]]);
+      const painted = isNear(pixels[0], [96, 96, 96], 60);
+      const beside = isNear(pixels[1], [255, 255, 255], 12);
+      return { ok: width === 2560 && painted && beside, detail: `largeur ${width}, masque ${pixels[0]}, à côté ${pixels[1]}` };
+    }));
+  await test('pdf : pas d’auteur ni de lieu', async () => {
+    const { text } = await pdfInfo(pdfFile);
+    const bytes = await fs.readFile(pdfFile);
+    const found = ['/Author', '/Creator', '/Producer', '/Title', '/Info', 'GPS', 'Exif'].filter((word) => bytes.includes(word));
+    const ok = !/^(Author|Creator|Producer|Title):/m.test(text) && found.length === 0;
+    return { ok, detail: found.join() || 'aucun champ' };
+  });
+  await test('pdf : positions de la table des références exactes', async () => {
+    const bytes = await fs.readFile(pdfFile);
+    const tail = bytes.subarray(bytes.lastIndexOf('startxref')).toString('latin1');
+    const table = Number(tail.split('\n')[1]);
+    const lines = bytes.subarray(table, bytes.indexOf('trailer', table)).toString('latin1').split('\n');
+    const count = Number(lines[1].split(' ')[1]);
+    const wrong = [];
+    for (let object = 1; object < count; object++) {
+      const offset = Number(lines[2 + object].slice(0, 10));
+      if (bytes.subarray(offset, offset + 12).toString('latin1').indexOf(`${object} 0 obj`) !== 0) wrong.push(object);
+    }
+    return { ok: bytes.subarray(table, table + 4).toString() === 'xref' && count > 3 && wrong.length === 0, detail: `${count} objets, faux : ${wrong.join() || 'aucun'}` };
+  });
+  await test('pdf : JPEG qualité Haute, 0,75 pt par pixel', () =>
+    session(tall, async (page) => {
+      const { pages } = await pdfInfo(pdfFile);
+      const bytes = await fs.readFile(pdfFile);
+      const height = Math.round(pages[0].height / 0.75);
+      // Premier flux d'image du fichier, comparé à la même partie encodée à 92 %.
+      const match = /\/Filter \/DCTDecode \/Length (\d+) >>\nstream\n/.exec(bytes.toString('latin1'));
+      const start = match.index + match[0].length;
+      const stream = bytes.subarray(start, start + Number(match[1]));
+      const expected = await page.evaluate(
+        async ({ id, height }) => {
+          const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+          const { getCapture } = await import(chrome.runtime.getURL('lib/db.js'));
+          const stitcher = new Stitcher(await getCapture(id));
+          const blob = await stitcher.renderPart({ top: 0, height }, 'image/jpeg', 0.92);
+          stitcher.dispose();
+          return [...new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))].map((b) => b.toString(16).padStart(2, '0')).join('');
+        },
+        { id: tall, height },
+      );
+      const ok = sha(stream) === expected && pages.every((box) => Math.abs(box.width - 2560 * 0.75) < 0.01) && stream[0] === 0xff && stream[1] === 0xd8;
+      return { ok, detail: `largeur ${pages[0].width} pt, flux ${stream.length} octets, identique à 92 % : ${sha(stream) === expected}` };
+    }));
+  await test('pdf : nom Captures/<hôte_date>/<hôte_date>.pdf', async () => {
+    const base = baseOf(pdfName);
+    return { ok: pdfName === `Captures/${base}/${base}.pdf` && /^127\.0\.0\.1_\d{4}-\d\d-\d\d_\d\dh\d\d-\d\d$/.test(base), detail: pdfName };
+  });
+
+  await test('zip : nom Captures/<hôte_date>/<hôte_date>.zip', () =>
+    session(tall, async (page) => {
+      const { filename } = await exported(page, 'zip');
+      const base = baseOf(filename);
+      return { ok: filename === `Captures/${base}/${base}.zip`, detail: filename };
+    }));
+  await test('zip : mêmes octets que Tout télécharger', () =>
+    session(tall, async (page) => {
+      const { bytes } = await exported(page, 'zip');
+      const file = path.join(dir, 'tall.zip');
+      await fs.writeFile(file, bytes);
+      await run('unzip', ['-t', file]);
+      const entries = await readZip(file);
+      await spyDownloads(page);
+      await page.locator('#download-all').click();
+      await page.waitForFunction((count) => window.saved.length === count, entries.length, { timeout: 120_000 });
+      await page.waitForFunction(() => !document.getElementById('download-all').disabled);
+      const names = await savedNames(page);
+      const hashes = [];
+      for (let i = 0; i < names.length; i++) hashes.push(sha(await savedBytes(page, i)));
+      const ok = entries.length === partCount && entries.every((entry, i) => entry.name === names[i].split('/').pop() && entry.sha === hashes[i]);
+      return { ok, detail: `${entries.map((entry) => entry.name).join(' ')} ; identiques : ${entries.filter((entry, i) => entry.sha === hashes[i]).length}/${entries.length}` };
+    }));
+  await test('zip : nom avec une seule partie', () =>
+    session(single, async (page) => {
+      const { bytes, filename } = await exported(page, 'zip');
+      const file = path.join(dir, 'single.zip');
+      await fs.writeFile(file, bytes);
+      const entries = await readZip(file);
+      const base = baseOf(filename);
+      return { ok: entries.length === 1 && entries[0].name === `${base}.png`, detail: entries.map((entry) => entry.name).join() };
+    }));
+  await test('zip : trois formats', () =>
+    session(tall, async (page) => {
+      const signatures = { png: (b) => b.subarray(1, 4).toString() === 'PNG', jpg: (b) => b[0] === 0xff && b[1] === 0xd8, webp: (b) => b.subarray(8, 12).toString() === 'WEBP' };
+      const results = [];
+      for (const format of ['png', 'jpg', 'webp']) {
+        await page.locator(`#format button[data-key="${format}"]`).click();
+        const { bytes } = await exported(page, 'zip');
+        const file = path.join(dir, `tall-${format}.zip`);
+        await fs.writeFile(file, bytes);
+        await run('unzip', ['-t', file]);
+        await run('unzip', ['-o', '-q', file, '-d', path.join(dir, `tall-${format}`)]);
+        const entries = await readZip(file);
+        const first = await fs.readFile(path.join(dir, `tall-${format}`, entries[0].name));
+        results.push(entries.every((entry) => entry.name.endsWith(`.${format}`)) && signatures[format](first));
+      }
+      await page.locator('#format button[data-key="png"]').click();
+      return { ok: results.every(Boolean), detail: results.join() };
+    }));
+  await test('zip : au-delà de 4 Gio ou 65 535 entrées, message de refus visible', () =>
+    session(tall, async (page) => {
+      await spyDownloads(page);
+      await page.evaluate(async () => {
+        const { ZipWriter } = await import(chrome.runtime.getURL('viewer/zip.js'));
+        const real = ZipWriter.prototype.add;
+        ZipWriter.prototype.add = function (...args) {
+          this.maxEntries = 1;
+          return real.apply(this, args);
+        };
+      });
+      await chooseExport(page, 'zip');
+      await waitIdle(page);
+      const message = await toastText(page);
+      const saved = await savedNames(page);
+      return { ok: saved.length === 0 && /4 Go/.test(message) && /65 535/.test(message), detail: message };
+    }));
+
+  await test('menu : la phrase sur la perte est affichée', () =>
+    session(tall, async (page) => {
+      await page.locator('#export').click();
+      const visible = await page.locator('#export-menu').isVisible();
+      const words = await page.locator('#export-menu').textContent();
+      const ok = visible && words.includes('PDF : plus léger, texte un peu moins net. Zip en PNG : sans perte.');
+      for (const [scheme, shot] of [['light', 'menu-clair.png'], ['dark', 'menu-sombre.png']]) {
+        await page.emulateMedia({ colorScheme: scheme });
+        await page.screenshot({ path: path.join(dir, shot), clip: { x: 760, y: 0, width: 520, height: 260 } });
+      }
+      return { ok, detail: words.replace(/\s+/g, ' ').trim() };
+    }));
+  await test('menu : clavier', () =>
+    session(tall, async (page) => {
+      await spyDownloads(page);
+      const active = () => page.evaluate(() => document.activeElement?.textContent.trim());
+      const steps = [];
+      await page.locator('#export').focus();
+      await page.keyboard.press('Enter');
+      steps.push(await active());
+      await page.keyboard.press('ArrowDown');
+      steps.push(await active());
+      await page.keyboard.press('ArrowDown');
+      steps.push(await active());
+      await page.keyboard.press('ArrowUp');
+      steps.push(await active());
+      await page.keyboard.press('Escape');
+      const closed = await page.locator('#export-menu').isHidden();
+      steps.push(await active());
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('Tab');
+      const closedByTab = await page.locator('#export-menu').isHidden();
+      await page.locator('#export').focus();
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('Enter');
+      await waitIdle(page);
+      const names = await savedNames(page);
+      const expected = ['PDF', 'Zip des images', 'PDF', 'Zip des images', 'Exporter'];
+      const ok = JSON.stringify(steps) === JSON.stringify(expected) && closed && closedByTab && names.length === 1 && names[0].endsWith('.zip');
+      return { ok, detail: `${steps.join(' → ')}, ${names.join()}` };
+    }));
+  await test('annuler : aucun fichier', () =>
+    session(tall, async (page) => {
+      await spyDownloads(page);
+      await slowRendering(page);
+      await chooseExport(page, 'pdf');
+      await page.waitForFunction(() => /Partie 2 sur/.test(document.getElementById('export-progress').textContent), undefined, { timeout: 60_000 });
+      const progress = await page.locator('#export-progress').textContent();
+      await page.locator('#export-cancel').click();
+      await waitIdle(page);
+      await pause(1500);
+      const saved = await savedNames(page);
+      const message = await toastText(page);
+      const free = await page.evaluate(() => !document.getElementById('export').disabled && !document.getElementById('download-all').disabled);
+      return { ok: saved.length === 0 && /annulé/.test(message) && free && /^Partie 2 sur \d+$/.test(progress), detail: `${progress}, ${saved.length} fichier, ${message}` };
+    }));
+  await test('erreur sur la partie 2 : message et aucun fichier', () =>
+    session(tall, async (page) => {
+      await spyDownloads(page);
+      await page.evaluate(async () => {
+        const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+        const real = Stitcher.prototype.renderPart;
+        let calls = 0;
+        Stitcher.prototype.renderPart = function (...args) {
+          if (++calls === 2) return Promise.reject(new Error('panne simulée'));
+          return real.apply(this, args);
+        };
+      });
+      await chooseExport(page, 'pdf');
+      await waitIdle(page);
+      await pause(500);
+      const message = await toastText(page);
+      const saved = await savedNames(page);
+      return { ok: saved.length === 0 && /partie 2/.test(message) && /aucun fichier/i.test(message) && !/panne simulée/.test(message), detail: message };
+    }));
+  await test('export figé : changer de capture, de découpage ou ouvrir l’éditeur est impossible, puis relecture du PDF page par page', () =>
+    session(tall, async (page) => {
+      await spyDownloads(page);
+      await slowRendering(page, 800);
+      await chooseExport(page, 'pdf');
+      await page.waitForFunction(() => document.getElementById('export-progress').textContent !== '', undefined, { timeout: 60_000 });
+      // Tentatives : découpage, autre capture, suppression, éditeur par le bouton et par le menu du clic droit, message d'un autre onglet.
+      const frozen = await page.evaluate(
+        ({ other, mask, id }) => {
+          const disabled = (selector) => [...document.querySelectorAll(selector)].every((el) => el.disabled);
+          const state = {
+            split: disabled('#split button'),
+            history: disabled('.history-item') && disabled('.history-delete'),
+            annotate: disabled('.annotate') && document.querySelector('#image-menu [data-action="annotate"]').disabled,
+            all: document.getElementById('download-all').disabled,
+          };
+          document.querySelector('#split button[data-key="short"]').click();
+          document.querySelector(`.history-item[data-id="${other}"]`).click();
+          document.querySelector('.annotate').click();
+          const channel = new BroadcastChannel('capture-annotations');
+          channel.postMessage({ captureId: id, items: [mask] });
+          channel.close();
+          return state;
+        },
+        { other: single, mask: MASK, id: tall },
+      );
+      await pause(300);
+      const editorOpen = await page.locator('#editor').isVisible();
+      await waitIdle(page);
+      const [saved] = await savedNames(page);
+      const bytes = await savedBytes(page, 0);
+      const file = path.join(dir, 'frozen.pdf');
+      await fs.writeFile(file, bytes);
+      const { pages } = await pdfInfo(file);
+      // Le masque arrivé en plein export ne doit pas y figurer, ni une autre capture ni un autre découpage.
+      const firstHeight = Math.round(pages[0].height / 0.75);
+      const png = await pdfPagePng(file, 2, path.join(dir, 'frozen-p2'));
+      const { pixels } = await readPixels(page, png, [[MASK.x + 450, MASK.y + 150 - firstHeight]]);
+      const url = await page.evaluate(() => location.search);
+      const after = await page.evaluate(() => {
+        const disabled = (selector) => [...document.querySelectorAll(selector)].some((el) => el.disabled);
+        return { split: disabled('#split button'), history: disabled('.history-item') };
+      });
+      const ok =
+        frozen.split && frozen.history && frozen.annotate && frozen.all && !editorOpen &&
+        pages.length === partCount && url.includes(tall) && saved.endsWith('.pdf') &&
+        !isNear(pixels[0], [96, 96, 96], 60) && !after.split && !after.history;
+      return { ok, detail: `${JSON.stringify(frozen)}, éditeur ${editorOpen}, ${pages.length} pages, pixel ${pixels[0]}, ensuite ${JSON.stringify(after)}` };
+    }));
+  await test('contrôle : un export mené à son terme compte bien un téléchargement', async () => {
+    const sw = context.serviceWorkers()[0];
+    const before = await sw.evaluate(async () => (await chrome.downloads.search({})).length);
+    const page = await openResults(context, single);
+    try {
+      await chooseExport(page, 'pdf');
+      await waitIdle(page);
+      await pause(1000);
+      const after = await sw.evaluate(async () => (await chrome.downloads.search({})).length);
+      return { ok: after === before + 1, detail: `${before} → ${after} téléchargements` };
+    } finally {
+      await page.close();
+    }
+  });
+  await test('onglet fermé en plein export : aucun fichier', async () => {
+    const sw = context.serviceWorkers()[0];
+    const before = await sw.evaluate(async () => (await chrome.downloads.search({})).length);
+    const page = await openResults(context, tall);
+    await slowRendering(page);
+    await chooseExport(page, 'pdf');
+    await page.waitForFunction(() => document.getElementById('export-progress').textContent !== '', undefined, { timeout: 60_000 });
+    await page.close();
+    await pause(2500);
+    const after = await sw.evaluate(async () => (await chrome.downloads.search({})).length);
+    return { ok: after === before, detail: `${before} → ${after} téléchargements` };
+  });
+  await test('onglet rechargé en plein export : aucun fichier', async () => {
+    const sw = context.serviceWorkers()[0];
+    const before = await sw.evaluate(async () => (await chrome.downloads.search({})).length);
+    const page = await openResults(context, tall);
+    try {
+      await slowRendering(page);
+      await chooseExport(page, 'pdf');
+      await page.waitForFunction(() => document.getElementById('export-progress').textContent !== '', undefined, { timeout: 60_000 });
+      await page.reload();
+      await page.waitForSelector('body[data-ready="true"]', { timeout: 120_000 });
+      await pause(1500);
+      const after = await sw.evaluate(async () => (await chrome.downloads.search({})).length);
+      const free = await page.evaluate(() => !document.getElementById('export').disabled);
+      return { ok: after === before && free, detail: `${before} → ${after} téléchargements, bouton libre : ${free}` };
+    } finally {
+      await page.close();
+    }
+  });
+  await test('double clic : un seul export', () =>
+    session(tall, async (page) => {
+      await spyDownloads(page);
+      await page.locator('#export').click();
+      await page.locator('#export-menu [data-export="pdf"]').dblclick();
+      await waitIdle(page);
+      await pause(1000);
+      const names = await savedNames(page);
+      return { ok: names.length === 1, detail: `${names.length} fichier` };
+    }));
+  await test('Tout télécharger : toujours un téléchargement par image', () =>
+    session(tall, async (page) => {
+      await spyDownloads(page);
+      await page.locator('#download-all').click();
+      await page.waitForFunction((count) => window.saved.length === count, partCount, { timeout: 120_000 });
+      await pause(500);
+      const names = await savedNames(page);
+      const formats = await page.evaluate(async () => Object.keys((await import(chrome.runtime.getURL('lib/settings.js'))).FORMATS));
+      return { ok: names.length === partCount && names.every((name) => /\/image-\d\d\.png$/.test(name)) && formats.join() === 'png,jpg,webp', detail: `${names.length} fichiers, formats ${formats.join()}` };
+    }));
+  await setup.close();
+}
+
+// --- Export d'une page de 100 000 points ---
+
+// Mémoire vive du navigateur de test et de tous ses processus enfants, additionnée, en Mo. La racine porte `--user-data-dir` et pas `--type=`.
+async function browserMemoryMb(profile) {
+  const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid=,rss=,command='], { maxBuffer: 16 * 1024 * 1024 });
+  const rows = stdout.trim().split('\n').map((line) => {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    return match && { pid: Number(match[1]), ppid: Number(match[2]), rss: Number(match[3]), command: match[4] };
+  }).filter(Boolean);
+  const root = rows.find((row) => row.command.includes(`--user-data-dir=${profile}`) && !row.command.includes('--type='));
+  if (!root) return 0;
+  const family = new Set([root.pid]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const row of rows) {
+      if (family.has(row.ppid) && !family.has(row.pid)) {
+        family.add(row.pid);
+        grew = true;
+      }
+    }
+  }
+  return rows.filter((row) => family.has(row.pid)).reduce((sum, row) => sum + row.rss, 0) / 1024;
+}
+
+// Contenu dense : du grain de type photo sur toute la tranche, puis des blocs de couleur. Le PNG d'une tranche pèse alors plusieurs Mo :
+// c'est plus lourd qu'une vraie page. Des blocs plats seuls se compressent presque à rien et fausseraient la mesure (essai du 2026-11-03 : zip de 18 Mo).
+function denseDraw(ctx, { width }) {
+  const top = -ctx.getTransform().f;
+  if (!self.denseGrain) {
+    const grain = new OffscreenCanvas(width, 1800);
+    const grainCtx = grain.getContext('2d');
+    const pixels = grainCtx.createImageData(width, 1800);
+    let seed = 12345;
+    for (let i = 0; i < pixels.data.length; i += 4) {
+      for (let c = 0; c < 3; c++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        pixels.data[i + c] = 96 + ((seed >> 16) & 63);
+      }
+      pixels.data[i + 3] = 255;
+    }
+    grainCtx.putImageData(pixels, 0, 0);
+    self.denseGrain = grain;
+  }
+  // Décalage horizontal différent à chaque tranche : deux tranches ne se ressemblent pas.
+  const shift = (top * 7) % width;
+  ctx.drawImage(self.denseGrain, -shift, top);
+  ctx.drawImage(self.denseGrain, width - shift, top);
+  for (let y = Math.floor(top / 480) * 480; y < top + 1800; y += 480) {
+    ctx.fillStyle = `hsl(${y % 360} 60% 45%)`;
+    ctx.fillRect(100, y, 300, 40);
+  }
+}
+
+const LONG_LIMIT_MB = 2500;
+
+async function groupExportLong(context, profile) {
+  console.log('\n— Export d’une page de 100 000 points');
+  const setup = await extensionPage(context, 'popup/popup.html');
+  await setup.evaluate(() => chrome.storage.sync.set({ split: 'medium', format: 'png' }));
+  const started = Date.now();
+  const id = await seedCapture(setup, { heightPoints: 100000, draw: denseDraw });
+  console.log(`   capture préparée en ${Math.round((Date.now() - started) / 1000)} s`);
+  await setup.close();
+
+  const page = await extensionPage(context, `viewer/viewer.html?id=${id}`);
+  page.setDefaultTimeout(600_000);
+  await page.waitForFunction(() => document.querySelectorAll('figure.part').length > 1, undefined, { timeout: 600_000 });
+  // Compte les canvas de partie (de la largeur de la capture, plus hauts que 1 000 px) vivants, de leur création à leur remise à zéro.
+  await page.evaluate(() => {
+    const Real = OffscreenCanvas;
+    window.liveParts = new Set();
+    window.peakParts = 0;
+    window.OffscreenCanvas = class extends Real {
+      constructor(width, height) {
+        super(width, height);
+        if (width === 2560 && height > 1000) {
+          window.liveParts.add(this);
+          window.peakParts = Math.max(window.peakParts, window.liveParts.size);
+        }
+      }
+      get width() {
+        return super.width;
+      }
+      set width(value) {
+        super.width = value;
+        if (value === 0) window.liveParts.delete(this);
+      }
+      get height() {
+        return super.height;
+      }
+      set height(value) {
+        super.height = value;
+        if (value === 0) window.liveParts.delete(this);
+      }
+    };
+  });
+  await spyDownloads(page);
+  const dir = path.join(WORK, 'export-long');
+  await fs.mkdir(dir, { recursive: true });
+  const measure = async (kind) => {
+    await page.evaluate(() => {
+      window.saved = [];
+      window.peakParts = 0;
+    });
+    let peak = 0;
+    const timer = setInterval(async () => {
+      peak = Math.max(peak, await browserMemoryMb(profile));
+    }, 2000);
+    const begun = Date.now();
+    try {
+      await page.waitForFunction(() => document.body.dataset.ready === 'true', undefined, { timeout: 600_000 });
+      await chooseExport(page, kind);
+      await page.waitForFunction(() => !document.getElementById('export').hidden && document.getElementById('export-cancel').hidden, undefined, { timeout: 600_000 });
+    } finally {
+      clearInterval(timer);
+    }
+    const seconds = Math.round((Date.now() - begun) / 1000);
+    const size = await page.evaluate(async () => (await (await fetch(window.saved[0].url)).blob()).size);
+    const parts = await page.evaluate(() => window.peakParts);
+    return { peak: Math.round(peak), seconds, size: Math.round(size / 1024 / 1024), parts, count: await page.evaluate(() => document.querySelectorAll('figure.part').length) };
+  };
+  const pdf = await measure('pdf');
+  const zip = await measure('zip');
+  await test('long : jamais plus d’un canvas de partie vivant', async () => ({ ok: pdf.parts === 1 && zip.parts === 1, detail: `PDF ${pdf.parts}, zip ${zip.parts}` }));
+  await test('long : moins de 2,5 Go au total, navigateur, processus graphique et rendus additionnés', async () => ({
+    ok: pdf.peak > 0 && zip.peak > 0 && pdf.peak < LONG_LIMIT_MB && zip.peak < LONG_LIMIT_MB,
+    detail: `${pdf.count} parties, PDF ${pdf.peak} Mo en ${pdf.seconds} s (fichier ${pdf.size} Mo), zip ${zip.peak} Mo en ${zip.seconds} s (fichier ${zip.size} Mo)`,
+  }));
+  await page.close();
+}
+
 async function main() {
   await fs.rm(WORK, { recursive: true, force: true });
   await fs.mkdir(WORK, { recursive: true });
@@ -358,11 +941,12 @@ async function main() {
   const context = await launch(extension, 'profile', WORK);
   try {
     context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
-    const groups = { base: groupBase, paste: groupPaste, zip: groupZip };
+    const groups = { base: groupBase, paste: groupPaste, zip: groupZip, export: groupExport };
     for (const [name, group] of Object.entries(groups)) {
       if (ONLY && ONLY !== name) continue;
       await group(context);
     }
+    if (!ONLY || ONLY === 'export-long') await groupExportLong(context, path.join(WORK, 'profile'));
   } finally {
     await context.close();
   }
