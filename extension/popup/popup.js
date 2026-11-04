@@ -8,6 +8,7 @@ const els = {
   status: document.getElementById('status'),
   statusText: document.getElementById('status-text'),
   barFill: document.getElementById('bar-fill'),
+  cancel: document.getElementById('cancel'),
   error: document.getElementById('error'),
   recent: document.getElementById('recent'),
   convert: document.getElementById('convert'),
@@ -57,10 +58,26 @@ els.convert.addEventListener('click', async () => {
   window.close();
 });
 
+els.cancel.addEventListener('click', () => {
+  els.cancel.disabled = true;
+  els.statusText.textContent = 'Annulation…';
+  chrome.runtime.sendMessage({ type: 'capture-cancel' });
+});
+
+function showProgress(done, total, what) {
+  els.barFill.style.width = `${Math.round((done / total) * 100)}%`;
+  els.statusText.textContent = `Capture ${what} : ${done} sur ${total}`;
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'capture-progress') {
-    els.barFill.style.width = `${Math.round((msg.done / msg.total) * 100)}%`;
-    els.statusText.textContent = `Capture de la page : ${msg.done} sur ${msg.total}`;
+  if (msg.type === 'capture-progress' && !els.cancel.disabled) {
+    if (msg.block) els.cancel.hidden = false;
+    showProgress(msg.done, msg.total, msg.block ? 'du bloc' : 'de la page');
+  }
+  if (msg.type === 'capture-cancelled') {
+    setBusy(false);
+    els.cancel.hidden = true;
+    els.cancel.disabled = false;
   }
   if (msg.type === 'capture-error') {
     showError(msg.message);
@@ -83,6 +100,15 @@ const { [PENDING_KEY]: pendingImage } = await chrome.storage.session.get(PENDING
 if (pendingImage) {
   chrome.storage.session.remove(PENDING_KEY);
   if (Date.now() - pendingImage.at < 5 * 60_000) showError(refusalMessage(NOT_ALLOWED));
+}
+
+// Rouverte pendant la capture d'un bloc : la fenêtre retrouve la progression et le bouton d'annulation.
+const { capturing } = await chrome.storage.session.get('capturing');
+if (capturing) {
+  setBusy(true);
+  els.cancel.hidden = false;
+  if (capturing.total) showProgress(capturing.done, capturing.total, 'du bloc');
+  else els.statusText.textContent = 'Préparation du bloc…';
 }
 
 async function start(mode) {

@@ -47,6 +47,7 @@ const els = {
   formatHint: document.getElementById('format-hint'),
   history: document.getElementById('history'),
   notice: document.getElementById('notice'),
+  partialNotice: document.getElementById('partial-notice'),
   mat: document.getElementById('mat'),
   parts: document.getElementById('parts'),
   menu: document.getElementById('image-menu'),
@@ -180,6 +181,8 @@ async function openCapture(id) {
       text(''),
     );
     els.notice.hidden = !record.truncated;
+    els.partialNotice.textContent = PARTIAL_NOTICES[record.partial] ?? '';
+    els.partialNotice.hidden = !PARTIAL_NOTICES[record.partial];
     markHistory(id);
     // Le calcul des coupes démarre ici même et reprend le refus de « Annoter » (planning) avant que `leaving` ne le rende.
     layout = layoutParts();
@@ -794,6 +797,13 @@ async function saveBlob(blob, filename) {
   }
 }
 
+// Ce qu'un bloc n'a pas pu donner en entier : le résultat le dit.
+const PARTIAL_NOTICES = {
+  scroller: 'Ce bloc défile à l’intérieur de la page : seule sa partie visible est capturée.',
+  fixed: 'Ce bloc est fixe et plus haut que l’écran : seule sa partie visible est capturée.',
+  wide: 'Ce bloc est plus large que la fenêtre : il est coupé aux bords de l’écran.',
+};
+
 // Un bloc ou une zone le dit dans son titre, ici et dans l'historique.
 function titled(capture, name) {
   const origin = { bloc: 'Bloc', zone: 'Zone' }[capture.origin];
@@ -982,6 +992,7 @@ function showEmpty(title, message) {
   els.title.textContent = 'Captures';
   els.meta.replaceChildren();
   els.notice.hidden = true;
+  els.partialNotice.hidden = true;
   els.splitHint.textContent = '';
   els.parts.removeAttribute('aria-busy');
   els.downloadAll.textContent = 'Tout télécharger';

@@ -39,6 +39,7 @@ export async function pagePrepare(options) {
   await frame();
 
   if (options.region && !pick?.isConnected) return { gone: true };
+  if (pick && !pick.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return { empty: true };
   const parentOf = (el) => el.parentElement || el.getRootNode().host || null;
   const chainOf = (el) => {
     const chain = [];

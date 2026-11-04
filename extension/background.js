@@ -8,6 +8,8 @@ const CAPTURE_INTERVAL_MS = 550;
 const KEEP_CAPTURES = 15;
 // La sélection en cours, dans storage.session : le service worker peut s'endormir pendant qu'on choisit.
 const PICK_KEY = 'picking';
+// La capture d'un bloc en cours, relue par la fenêtre de l'icône à sa réouverture pour proposer « Annuler ».
+const CAPTURING_KEY = 'capturing';
 const PAGE_OPTIONS = {
   preload: true,
   preloadStepMs: 120,
@@ -17,9 +19,14 @@ const PAGE_OPTIONS = {
 };
 
 class CaptureError extends Error {}
+class CaptureCancelled extends Error {}
 
 let running = false;
+let cancelled = false;
 let lastGrabAt = 0;
+
+// Un service worker qui démarre n'a aucune capture en cours : un état resté d'une panne ne doit pas bloquer la fenêtre.
+chrome.storage.session.remove(CAPTURING_KEY);
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type !== 'capture') return false;
@@ -39,6 +46,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       async (err) => sendResponse({ ok: false, error: (await explain(err)).message }),
     );
     return true;
+  }
+  if (msg?.type === 'capture-cancel') {
+    cancelled = true;
+    return false;
   }
   if (msg?.type === 'pick-cancel') {
     chrome.storage.session.remove(PICK_KEY);
@@ -72,6 +83,10 @@ self.captureTab = (tabId, mode) => chrome.tabs.get(tabId).then((tab) => runCaptu
 self.startPick = (tabId, mode) => chrome.tabs.get(tabId).then((tab) => startPick(tab, mode));
 self.onCommandForTest = onCommand;
 self.explainForTest = (err) => explain(err);
+self.cancelCaptureForTest = () => {
+  cancelled = true;
+};
+self.captureRunningForTest = () => running;
 
 async function startPick(tab, mode) {
   if (running) throw new CaptureError('Une capture est déjà en cours.');
@@ -96,6 +111,7 @@ async function assertNotOwnPage(tab) {
 async function runCapture(tab, mode, pick) {
   if (running) return null;
   running = true;
+  cancelled = false;
   badge(tab.id, '…', '#5f6368');
   setTitle(tab.id, 'Capture');
   chrome.storage.session.remove('lastError');
@@ -117,10 +133,16 @@ async function runCapture(tab, mode, pick) {
   } catch (err) {
     // Onglet fermé pendant la capture : c'est le choix de l'utilisateur, rien à signaler.
     if (!(await chrome.tabs.get(tab.id).catch(() => null))) return null;
+    if (err instanceof CaptureCancelled) {
+      badge(tab.id, '');
+      notify({ type: 'capture-cancelled' });
+      return null;
+    }
     await reportFailure(tab, err);
     return null;
   } finally {
     running = false;
+    await chrome.storage.session.remove(CAPTURING_KEY);
   }
 }
 
@@ -216,8 +238,10 @@ async function captureVisible(tab) {
 // Un bloc ou une zone. Les tranches sont rognées avant d'être enregistrées : la capture ressemble à une page plus petite, et le modèle ne change pas.
 async function captureRegion(tab, pick) {
   if (pick.mode === 'zone') return captureZone(tab, pick);
+  await chrome.storage.session.set({ [CAPTURING_KEY]: { tabId: tab.id, done: 0, total: 0 } });
   try {
     const info = await inTab(tab.id, pagePrepare, [{ ...PAGE_OPTIONS, region: true }]);
+    if (cancelled) throw new CaptureCancelled();
     if (info.gone) throw new CaptureError('Le bloc choisi a disparu de la page. Relance la capture et choisis-le de nouveau.');
     if (info.empty) throw new CaptureError("Ce bloc n'est pas visible : il n'y a rien à capturer. Choisis-en un autre.");
     const { region, clip } = info;
@@ -234,6 +258,7 @@ async function captureRegion(tab, pick) {
     let scale = 0;
     let size = null;
     for (let i = 0; i < offsets.length; i++) {
+      if (cancelled) throw new CaptureCancelled();
       const wanted = region.still ? region.start : region.top + offsets[i];
       const actual = await inTab(tab.id, pageScrollTo, [wanted, true]);
       const bmp = await createImageBitmap(await grab(tab));
@@ -246,8 +271,10 @@ async function captureRegion(tab, pick) {
       const top = clip.y + region.top + offsets[i] - actual;
       const y = Math.max(0, Math.min(Math.round(top * scale), bmp.height - size.h));
       slices.push({ y: Math.round(offsets[i] * scale), blob: await cutBitmap(bmp, size.x, y, size.w, size.h) });
-      progress(tab.id, i + 1, offsets.length);
+      progress(tab.id, i + 1, offsets.length, true);
+      await chrome.storage.session.set({ [CAPTURING_KEY]: { tabId: tab.id, done: i + 1, total: offsets.length } });
     }
+    if (cancelled) throw new CaptureCancelled();
     const crop = { x: 0, y: 0, w: size.w, h: size.h };
     return {
       mode: 'region',
@@ -386,9 +413,9 @@ async function explain(err) {
   return { message, expected: false };
 }
 
-function progress(tabId, done, total) {
+function progress(tabId, done, total, block = false) {
   badge(tabId, `${Math.round((done / total) * 100)}%`, '#1a73e8');
-  notify({ type: 'capture-progress', done, total });
+  notify({ type: 'capture-progress', done, total, block });
 }
 
 // L'onglet peut avoir été fermé entre-temps : ces retouches de l'icône échouent alors sans conséquence.

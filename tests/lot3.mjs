@@ -906,8 +906,14 @@ async function groupBarres(context, sw, base) {
 
 // --- Cas limites et annulation ---
 
-// Le titre de l'icône après un refus, et l'absence de page de résultats.
+// Le refus se montre à l'icône un instant avant que la capture ne soit finie : le contrôle suivant doit attendre cette fin.
+async function untilIdle(sw) {
+  for (let i = 0; i < 100 && (await sw.evaluate(() => self.captureRunningForTest())); i++) await sleep(100);
+}
+
+// Le titre de l'icône après un refus, et l'absence de page de résultats. La fenêtre de l'icône, ouverte d'office, consomme le message gardé.
 async function refused(context, sw, tabId, startIt) {
+  await untilIdle(sw);
   await startIt();
   // Le refus est prêt dès que le titre le dit.
   let title = '';
@@ -915,14 +921,15 @@ async function refused(context, sw, tabId, startIt) {
     await sleep(200);
     title = await sw.evaluate((tabId) => chrome.action.getTitle({ tabId }).catch(() => ''), tabId);
   }
-  const stored = await sw.evaluate(async () => (await chrome.storage.session.get('lastError')).lastError?.message ?? '');
+  await untilIdle(sw);
   const viewers = context.pages().filter((p) => p.url().includes('/viewer/viewer.html')).length;
   for (const p of context.pages()) if (p.url().includes('/popup/popup.html')) await p.close();
-  return { title, stored, viewers };
+  return { title, viewers };
 }
 
 // Choisit l'élément et valide, sans attendre de page de résultats.
 async function chooseAndValidate(sw, page, tabId, selector) {
+  await untilIdle(sw);
   await startPick(sw, tabId, 'block');
   await sw.evaluate(
     async ({ tabId, selector }) => {
@@ -1004,6 +1011,7 @@ async function groupLimites(context, sw, base) {
       console.error = (...args) => self.__logged.push(args.join(' '));
       self.addEventListener('unhandledrejection', (event) => self.__logged.push(`rejet non intercepté : ${event.reason}`));
     });
+    await untilIdle(sw);
     const { page, tabId } = await openTab(context, sw, tall);
     await chooseAndValidate(sw, page, tabId, '#inner');
     await sleep(3000);
@@ -1026,7 +1034,7 @@ async function groupLimites(context, sw, base) {
     const { page, tabId } = await openTab(context, sw, 'chrome://version');
     try {
       const out = await refused(context, sw, tabId, () => sw.evaluate(async (tabId) => self.onCommandForTest('capture-pick', await chrome.tabs.get(tabId)), tabId));
-      return { ok: /interdit/.test(out.title) && /interdit/.test(out.stored) && out.viewers === 0, detail: out.title };
+      return { ok: /interdit/.test(out.title) && out.viewers === 0, detail: out.title };
     } finally {
       await page.close();
     }
@@ -1051,7 +1059,7 @@ async function groupLimites(context, sw, base) {
       const { page, tabId } = await openTab(context, sw, url);
       try {
         const out = await refused(context, sw, tabId, () => chooseAndValidate(sw, page, tabId, selector));
-        return { ok: /pas visible/.test(out.title) && /pas visible/.test(out.stored) && out.viewers === 0, detail: out.title };
+        return { ok: /pas visible/.test(out.title) && out.viewers === 0, detail: out.title };
       } finally {
         await page.close();
       }
@@ -1069,6 +1077,7 @@ async function groupLimites(context, sw, base) {
   });
 
   await test('limite : la capture refusée pendant une autre', async () => {
+    await untilIdle(sw);
     const { page, tabId } = await openTab(context, sw, tall);
     try {
       const opened = nextViewer(context);
