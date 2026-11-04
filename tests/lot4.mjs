@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { EXTENSION, MANIFEST_EXPECTED, capture, check, launch, openTab, prepareExtension, results } from './lib.mjs';
+import { EXTENSION, MANIFEST_EXPECTED, capture, check, extensionPage, launch, openTab, prepareExtension, results, seedCapture } from './lib.mjs';
 
 const run = promisify(execFile);
 const HERE = import.meta.dirname;
@@ -654,6 +654,288 @@ async function groupAppareils(context, sw, env) {
   await page.close();
 }
 
+// --- Le groupe dans la page de résultats ---
+
+const DEVICE_KEYS = ['telephone', 'tablette', 'ordinateur'];
+
+// Vide la base : chaque contrôle du nettoyage compte ses captures.
+const emptyDb = (page) =>
+  page.evaluate(async () => {
+    const db = await import(chrome.runtime.getURL('lib/db.js'));
+    for (const { id } of await db.listCaptures()) await db.deleteCapture(id);
+  });
+const remainingIds = (page) =>
+  page.evaluate(async () => {
+    const db = await import(chrome.runtime.getURL('lib/db.js'));
+    return (await db.listCaptures()).map(({ id }) => id);
+  });
+const prune = (page, keep, spared = []) =>
+  page.evaluate(async ({ keep, spared }) => {
+    const db = await import(chrome.runtime.getURL('lib/db.js'));
+    await db.pruneCaptures(keep, spared);
+  }, { keep, spared });
+
+// Un groupe de trois petites captures, sans passer par le débogueur. Rend leurs ids, dans l'ordre des appareils.
+async function seedGroup(page, createdAt, url = 'http://127.0.0.1/capture-synthetique') {
+  const id = `groupe-${createdAt}`;
+  const ids = [];
+  for (const device of DEVICE_KEYS) ids.push(await seedCapture(page, { heightPoints: 300, widthPoints: 400, scale: 1, createdAt, group: { id, device, url } }));
+  return ids;
+}
+
+const tabsState = (viewer) =>
+  viewer.evaluate(() => ({
+    hidden: document.getElementById('device-tabs').hidden,
+    labels: [...document.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent),
+    selected: document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ?? null,
+    focused: document.activeElement?.getAttribute('role') === 'tab' ? document.activeElement.textContent : null,
+    id: new URLSearchParams(location.search).get('id'),
+    size: document.querySelector('.part-size')?.textContent ?? '',
+  }));
+const waitReady = (viewer) => viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+
+// Attend que l'onglet demandé soit affiché et ses images dessinées.
+async function showTab(viewer, label) {
+  await viewer.locator('[role="tab"]', { hasText: label }).click();
+  await viewer.waitForFunction((label) => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent === label && document.body.dataset.ready === 'true', label, { timeout: 60_000 });
+}
+
+// Les téléchargements nés de `act`, une fois écrits : les noms demandés à Chrome, et les fichiers (Playwright les range sous un autre nom).
+async function downloadsDuring(sw, viewer, act) {
+  await viewer.evaluate(() => {
+    window.askedNames = [];
+    if (window.spying) return;
+    window.spying = true;
+    const download = chrome.downloads.download.bind(chrome.downloads);
+    chrome.downloads.download = (options) => {
+      window.askedNames.push(options.filename);
+      return download(options);
+    };
+  });
+  const before = await sw.evaluate(async () => (await chrome.downloads.search({})).map(({ id }) => id));
+  await act();
+  for (let i = 0; i < 120; i++) {
+    const fresh = await sw.evaluate(async (before) => (await chrome.downloads.search({})).filter(({ id }) => !before.includes(id)).map(({ filename, state }) => ({ filename, state })), before);
+    if (fresh.length && fresh.every(({ state }) => state === 'complete')) return { names: await viewer.evaluate(() => window.askedNames), files: fresh.map(({ filename }) => filename) };
+    await sleep(250);
+  }
+  throw new Error('téléchargement non terminé');
+}
+
+async function groupGroupe(context, sw, env) {
+  console.log('\n— Le groupe dans la page de résultats');
+  const { base } = env;
+  // Pas la fenêtre de l'icône : elle se ferme à la fin d'une capture.
+  const admin = await extensionPage(context, 'convert/convert.html');
+  const { page, tabId } = await originPage(context, sw, base);
+  const done = await capture(context, sw, tabId, 'devices');
+  const viewer = done.viewer;
+  await viewer.setViewportSize({ width: 1280, height: 900 });
+  const firstId = done.id;
+
+  await test('groupe : trois onglets au clavier', async () => {
+    const start = await tabsState(viewer);
+    await viewer.locator('[role="tab"][aria-selected="true"]').focus();
+    await viewer.keyboard.press('ArrowRight');
+    await viewer.waitForFunction(() => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent === 'Tablette' && document.body.dataset.ready === 'true', null, { timeout: 60_000 });
+    const second = await tabsState(viewer);
+    await viewer.keyboard.press('End');
+    await viewer.waitForFunction(() => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent === 'Ordinateur' && document.body.dataset.ready === 'true', null, { timeout: 60_000 });
+    const third = await tabsState(viewer);
+    await viewer.keyboard.press('ArrowRight');
+    await viewer.waitForFunction(() => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent === 'Téléphone' && document.body.dataset.ready === 'true', null, { timeout: 60_000 });
+    const wrapped = await tabsState(viewer);
+    const roving = await viewer.evaluate(() => [...document.querySelectorAll('[role="tab"]')].map((tab) => tab.tabIndex).join());
+    const ok = same(start.labels, ['Téléphone', 'Tablette', 'Ordinateur']) && start.selected === 'Téléphone' && /^780 ×/.test(start.size) && second.focused === 'Tablette' && /^1[\s ]?640 ×/.test(second.size) && third.focused === 'Ordinateur' && /^2[\s ]?560 ×/.test(third.size) && wrapped.focused === 'Téléphone' && wrapped.id === firstId && roving === '0,-1,-1';
+    return { ok, detail: `${start.size} / ${second.size} / ${third.size} / ${wrapped.selected} ; ${roving}` };
+  });
+
+  await test('groupe : onglets lisibles en clair et en sombre', async () => {
+    const colors = async (scheme) => {
+      await viewer.emulateMedia({ colorScheme: scheme });
+      await viewer.screenshot({ path: path.join(WORK, `onglets-${scheme}.png`) });
+      return viewer.evaluate(() => {
+        const luminance = (text) => {
+          const [r, g, b] = text.match(/[\d.]+/g).map(Number).map((value) => {
+            const c = value / 255;
+            return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+          });
+          return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        };
+        const ratio = (a, b) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+        const mat = getComputedStyle(document.getElementById('mat')).backgroundColor;
+        const selected = getComputedStyle(document.querySelector('[role="tab"][aria-selected="true"]'));
+        const other = getComputedStyle(document.querySelector('[role="tab"][aria-selected="false"]'));
+        return { selected: ratio(selected.color, selected.backgroundColor), other: ratio(other.color, mat) };
+      });
+    };
+    const light = await colors('light');
+    const dark = await colors('dark');
+    await viewer.emulateMedia({ colorScheme: null });
+    return { ok: [light, dark].every(({ selected, other }) => selected >= 4.5 && other >= 4.5), detail: JSON.stringify({ light, dark }) };
+  });
+
+  await test('groupe : une ligne d’historique', async () => {
+    const rows = await viewer.evaluate(() => [...document.querySelectorAll('.history-item')].map((row) => ({ title: row.querySelector('.history-title').textContent, current: row.getAttribute('aria-current') })));
+    await showTab(viewer, 'Tablette');
+    const current = await viewer.evaluate(() => document.querySelector('.history-item').getAttribute('aria-current'));
+    return { ok: rows.length === 1 && /appareils/.test(rows[0].title) && rows[0].current === 'true' && current === 'true', detail: JSON.stringify(rows) };
+  });
+
+  await test('groupe : chaque onglet a ses boutons et son annotation', async () => {
+    await viewer.locator('figure.part .annotate').first().click();
+    await viewer.waitForSelector('#editor:not([hidden])');
+    const width = await viewer.evaluate(() => document.querySelector('figure.part .part-size').textContent);
+    await viewer.click('#editor-close');
+    await viewer.waitForSelector('#editor', { state: 'hidden' });
+    const ids = await admin.evaluate(async (firstId) => {
+      const db = await import(chrome.runtime.getURL('lib/db.js'));
+      const first = await db.getCapture(firstId);
+      const members = await db.listGroup(first.group.id);
+      await db.saveAnnotations(members[1].id, [{ id: 'a1', type: 'rect', color: 'red', size: 'm', x: 10, y: 20, width: 300, height: 80 }]);
+      return members.map(({ id }) => id);
+    }, firstId);
+    const kinds = await admin.evaluate(async (ids) => {
+      const db = await import(chrome.runtime.getURL('lib/db.js'));
+      return Promise.all(ids.map(async (id) => (await db.getAnnotations(id)).length));
+    }, ids);
+    await viewer.reload();
+    await waitReady(viewer);
+    await viewer.waitForFunction(() => document.querySelector('.history-mark'));
+    const mark = await viewer.locator('.history-mark').innerText();
+    const buttons = [];
+    for (const label of ['Téléphone', 'Tablette', 'Ordinateur']) {
+      await showTab(viewer, label);
+      buttons.push(await viewer.evaluate(() => [...document.querySelector('figure.part .part-actions').querySelectorAll('button')].map((el) => el.textContent).join()));
+    }
+    await viewer.evaluate(() => null);
+    await admin.evaluate(async (id) => {
+      const db = await import(chrome.runtime.getURL('lib/db.js'));
+      await db.saveAnnotations(id, []);
+    }, ids[1]);
+    return { ok: same(kinds, [0, 1, 0]) && mark === 'annotée' && buttons.every((row) => row === 'Copier,Télécharger,Annoter') && /^1[\s ]?640/.test(width), detail: `${kinds} ; ${mark} ; ${buttons[0]} ; éditeur ${width}` };
+  });
+
+  await test('groupe : noms de fichiers et dossier', async () => {
+    const names = [];
+    for (const label of ['Téléphone', 'Tablette', 'Ordinateur']) {
+      await showTab(viewer, label);
+      names.push((await downloadsDuring(sw, viewer, () => viewer.locator('figure.part .part-save').first().click())).names[0]);
+    }
+    const rows = names.map((name) => name.split('/'));
+    const folder = rows[0][1];
+    const ok = rows.every(([root, dir]) => root === 'Captures' && dir === folder) && /^127\.0\.0\.1_\d{4}-/.test(folder) && DEVICE_KEYS.every((key, i) => rows[i][2] === `${folder}-${key}-01.png`);
+    return { ok, detail: rows.map((row) => row.join('/')).join(' ; ') };
+  });
+
+  await test('groupe : Exporter et Tout télécharger portent sur l’onglet courant', async () => {
+    await showTab(viewer, 'Tablette');
+    const count = await viewer.locator('figure.part').count();
+    const { names: all } = await downloadsDuring(sw, viewer, () => viewer.click('#download-all'));
+    await viewer.waitForFunction(() => !document.getElementById('download-all').disabled);
+    const zip = await downloadsDuring(sw, viewer, async () => {
+      await viewer.click('#export');
+      await viewer.click('[data-export="zip"]');
+      await viewer.waitForFunction(() => document.querySelector('[role="tab"]').disabled);
+    });
+    await viewer.waitForFunction(() => !document.getElementById('export').hidden && !document.querySelector('[role="tab"]').disabled, null, { timeout: 60_000 });
+    const pdf = await downloadsDuring(sw, viewer, async () => {
+      await viewer.click('#export');
+      await viewer.click('[data-export="pdf"]');
+    });
+    await viewer.waitForFunction(() => !document.getElementById('export').hidden, null, { timeout: 60_000 });
+    const { stdout } = await run('unzip', ['-Z1', zip.files[0]]);
+    const entries = stdout.trim().split('\n');
+    const pages = /Pages:\s+(\d+)/.exec((await run('pdfinfo', [pdf.files[0]])).stdout)?.[1];
+    const ok = all.length === count && all.every((name) => /-tablette-\d\d\.png$/.test(name)) && /-tablette\.zip$/.test(zip.names[0]) && entries.length === count && entries.every((name) => /-tablette-\d\d\.png$/.test(name)) && /-tablette\.pdf$/.test(pdf.names[0]) && Number(pages) === count;
+    return { ok, detail: `${count} images ; ${path.basename(zip.names[0])} (${entries.length}) ; ${path.basename(pdf.names[0])} (${pages} p.) ; onglets grisés pendant l'export` };
+  });
+
+  await test('groupe : la croix supprime les trois après confirmation', async () => {
+    const before = await remainingIds(admin);
+    let question = '';
+    let answer = false;
+    const onDialog = async (dialog) => {
+      question = dialog.message();
+      await (answer ? dialog.accept() : dialog.dismiss());
+    };
+    viewer.on('dialog', onDialog);
+    await viewer.locator('.history-delete').first().click();
+    await sleep(300);
+    const refused = await remainingIds(admin);
+    answer = true;
+    await viewer.locator('.history-delete').first().click();
+    await viewer.waitForFunction(() => /supprimées/.test(document.getElementById('toast').textContent));
+    viewer.off('dialog', onDialog);
+    const after = await remainingIds(admin);
+    const empty = await tabsState(viewer);
+    return { ok: before.length === 3 && refused.length === 3 && after.length === 0 && /3 captures/.test(question) && empty.hidden && !(await viewer.locator('.history-item').count()), detail: `${question} ; ${before.length}→${refused.length}→${after.length}` };
+  });
+  await viewer.close();
+  await page.close();
+
+  await test('groupe : compte pour une capture dans le nettoyage', async () => {
+    await emptyDb(admin);
+    const now = Date.now();
+    const old = await seedCapture(admin, { heightPoints: 300, widthPoints: 400, scale: 1, createdAt: now - 100_000 });
+    const group = await seedGroup(admin, now - 50_000);
+    for (let i = 0; i < 14; i++) await seedCapture(admin, { heightPoints: 300, widthPoints: 400, scale: 1, createdAt: now - i });
+    await prune(admin, 15);
+    const left = await remainingIds(admin);
+    return { ok: !left.includes(old) && group.every((id) => left.includes(id)) && left.length === 17, detail: `${left.length} restantes : 14 captures + 1 groupe de 3, la plus ancienne retirée` };
+  });
+
+  await test('groupe : survit si un seul onglet est annoté, recadré ou affiché', async () => {
+    await emptyDb(admin);
+    const now = Date.now();
+    const annotated = await seedGroup(admin, now - 400_000);
+    const framed = await seedGroup(admin, now - 300_000);
+    const shown = await seedGroup(admin, now - 200_000);
+    const plain = await seedGroup(admin, now - 100_000);
+    for (let i = 0; i < 3; i++) await seedCapture(admin, { heightPoints: 300, widthPoints: 400, scale: 1, createdAt: now - i });
+    await admin.evaluate(async ({ annotated, framed }) => {
+      const db = await import(chrome.runtime.getURL('lib/db.js'));
+      await db.saveAnnotations(annotated[1], [{ id: 'a1', type: 'rect', color: 'red', size: 'm', x: 1, y: 2, width: 30, height: 8 }]);
+      await db.saveEdits(framed[2], { items: [], trim: { x: 0, y: 10, w: 400, h: 200 } });
+    }, { annotated, framed });
+    await prune(admin, 3, [shown[1]]);
+    const left = await remainingIds(admin);
+    const whole = (ids) => ids.every((id) => left.includes(id));
+    return { ok: whole(annotated) && whole(framed) && whole(shown) && plain.every((id) => !left.includes(id)), detail: `annoté ${whole(annotated)}, recadré ${whole(framed)}, affiché ${whole(shown)}, ordinaire retiré ${plain.every((id) => !left.includes(id))}` };
+  });
+
+  await test('groupe : un téléphone redirigé reste dans le dossier du groupe', async () => {
+    await emptyDb(admin);
+    const ids = await seedGroup(admin, Date.now(), 'http://site.fr/page');
+    const opened = await extensionPage(context, `viewer/viewer.html?id=${ids[0]}`);
+    await waitReady(opened);
+    const { names: [name] } = await downloadsDuring(sw, opened, () => opened.locator('figure.part .part-save').first().click());
+    await opened.close();
+    return { ok: /^Captures\/site\.fr_[^/]+\/site\.fr_[^/]+-telephone-01\.png$/.test(name), detail: name };
+  });
+
+  await test('ancienne capture sans group : s’ouvre comme avant', async () => {
+    await emptyDb(admin);
+    const id = await seedCapture(admin, { heightPoints: 300, widthPoints: 400, scale: 1 });
+    const opened = await extensionPage(context, `viewer/viewer.html?id=${id}`);
+    await waitReady(opened);
+    const state = await tabsState(opened);
+    const title = await opened.locator('.history-title').innerText();
+    const { names: [name] } = await downloadsDuring(sw, opened, () => opened.locator('figure.part .part-save').first().click());
+    let question = '';
+    opened.once('dialog', async (dialog) => {
+      question = dialog.message();
+      await dialog.accept();
+    });
+    await opened.locator('.history-delete').first().click();
+    await opened.waitForFunction(() => /Capture supprimée/.test(document.getElementById('toast').textContent));
+    await opened.close();
+    return { ok: state.hidden && !state.labels.length && !/appareils/.test(title) && /^Captures\/127\.0\.0\.1_[^/]+\.png$/.test(name) && /^Supprimer cette capture/.test(question), detail: `${title} ; ${name} ; ${question}` };
+  });
+
+  await admin.close();
+}
+
 // --- Un vrai site ---
 
 async function groupSite(context, sw) {
@@ -875,7 +1157,7 @@ async function main() {
     console.log(`\n${results.length - failed}/${results.length} vérifications réussies`);
     process.exit(failed ? 1 : 0);
   }
-  const groups = { essai: groupEssai, scenarios: groupScenarios, reelle: groupReelle, appareils: groupAppareils, site: groupSite, long: groupLong, visible: groupVisible };
+  const groups = { essai: groupEssai, scenarios: groupScenarios, reelle: groupReelle, appareils: groupAppareils, groupe: groupGroupe, site: groupSite, long: groupLong, visible: groupVisible };
   const onDemand = new Set(['site', 'long', 'visible']);
   try {
     for (const [name, group] of Object.entries(groups)) {

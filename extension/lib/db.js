@@ -37,7 +37,9 @@ async function request(stores, mode, makeRequest) {
 
 const onStore = (name, mode, makeRequest) => request(name, mode, (tx) => makeRequest(tx.objectStore(name)));
 
-const newestFirst = (a, b) => b.createdAt - a.createdAt;
+// Les captures d'un groupe ont la même date : elles restent dans l'ordre des appareils, le téléphone d'abord.
+const DEVICE_ORDER = ['telephone', 'tablette', 'ordinateur'];
+const newestFirst = (a, b) => b.createdAt - a.createdAt || DEVICE_ORDER.indexOf(a.group?.device) - DEVICE_ORDER.indexOf(b.group?.device);
 
 // La capture n'existe plus (supprimée dans un autre onglet) : ses annotations n'ont nulle part où aller.
 export class CaptureGone extends Error {
@@ -65,16 +67,40 @@ export async function listCaptures() {
   return all.sort(newestFirst);
 }
 
+// Les captures d'un groupe, dans l'ordre des appareils.
+export async function listGroup(groupId) {
+  return (await listCaptures()).filter(({ group }) => group?.id === groupId);
+}
+
+// Supprime tout le groupe et ses annotations dans la même transaction.
+export function deleteGroup(groupId) {
+  return request([CAPTURES, ANNOTATIONS], 'readwrite', (tx) => {
+    const all = tx.objectStore(CAPTURES).getAll();
+    all.onsuccess = () => {
+      for (const { id, group } of all.result) if (group?.id === groupId) removeCapture(tx, id);
+    };
+    return all;
+  });
+}
+
 // Garde les `keep` captures non annotées les plus récentes ; une capture annotée ou recadrée n'est jamais supprimée ici, ni une capture de la
 // liste `spared` (celles affichées à l'écran, qu'on peut encore annoter).
+// Un groupe compte pour une capture : il reste entier si l'une des siennes est annotée, recadrée ou affichée, et part entier sinon.
 // Lecture et suppressions dans une seule transaction : une annotation enregistrée entre-temps est vue.
 export async function pruneCaptures(keep, spared = []) {
   await request([CAPTURES, ANNOTATIONS], 'readwrite', (tx) => {
     const annotated = tx.objectStore(ANNOTATIONS).getAllKeys();
     const all = tx.objectStore(CAPTURES).getAll();
     all.onsuccess = () => {
-      const plain = all.result.filter((capture) => !annotated.result.includes(capture.id)).sort(newestFirst);
-      for (const old of plain.slice(keep)) if (!spared.includes(old.id)) removeCapture(tx, old.id);
+      const entries = new Map();
+      for (const capture of all.result.sort(newestFirst)) {
+        const key = capture.group?.id ?? capture.id;
+        entries.set(key, [...(entries.get(key) ?? []), capture.id]);
+      }
+      const plain = [...entries.values()].filter((ids) => !ids.some((id) => annotated.result.includes(id)));
+      for (const ids of plain.slice(keep)) {
+        if (!ids.some((id) => spared.includes(id))) for (const id of ids) removeCapture(tx, id);
+      }
     };
     return all;
   });

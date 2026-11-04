@@ -144,13 +144,13 @@ export async function extensionPage(context, pagePath) {
 // `page` doit être une page de l'extension. Contenu : voir SEED_LAYOUT. `draw`, facultatif, est une fonction
 // autonome (elle est recopiée en texte dans la page, donc sans variable extérieure) appelée une fois par tranche
 // après le contenu standard : draw(ctx, { scale, width, height }), ctx étant en pixels de la capture entière.
-export function seedCapture(page, { heightPoints, scale = 2, widthPoints = 1280, draw, createdAt = Date.now() }) {
-  const options = { heightPoints, scale, widthPoints, createdAt, layout: SEED_LAYOUT, slicePx: SEED_SLICE_PX };
+export function seedCapture(page, { heightPoints, scale = 2, widthPoints = 1280, draw, createdAt = Date.now(), group }) {
+  const options = { heightPoints, scale, widthPoints, createdAt, group, layout: SEED_LAYOUT, slicePx: SEED_SLICE_PX };
   return page.evaluate(`(${seedInPage})(${JSON.stringify(options)}, ${draw ?? 'null'})`);
 }
 
 // S'exécute dans la page de l'extension (envoyée en texte par seedCapture) : ne rien y référencer d'extérieur.
-async function seedInPage({ heightPoints, scale, widthPoints, createdAt, layout, slicePx }, draw) {
+async function seedInPage({ heightPoints, scale, widthPoints, createdAt, group, layout, slicePx }, draw) {
   const { saveCapture } = await import(chrome.runtime.getURL('lib/db.js'));
   const width = Math.round(widthPoints * scale);
   const height = Math.round(heightPoints * scale);
@@ -209,5 +209,6 @@ async function seedInPage({ heightPoints, scale, widthPoints, createdAt, layout,
     slices,
     scroller: 'window',
     truncated: false,
+    ...(group ? { group } : {}),
   });
 }

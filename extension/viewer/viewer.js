@@ -1,6 +1,6 @@
 import { openEditor } from '../annotate/editor.js';
 import { avoidRanges, drawAnnotations } from '../annotate/render.js';
-import { CaptureGone, deleteCapture, getCapture, getEdits, listCaptures, listEditKinds, saveEdits } from '../lib/db.js';
+import { CaptureGone, deleteCapture, deleteGroup, getCapture, getEdits, listCaptures, listEditKinds, listGroup, saveEdits } from '../lib/db.js';
 import { downloadEnd } from '../lib/download-end.js';
 import { FORMATS, SPLITS, loadSettings, saveSettings } from '../lib/settings.js';
 import { exportPdf, exportZip } from './export.js';
@@ -13,6 +13,7 @@ const PREVIEW_WIDTH = 820;
 const DOWNLOAD_FOLDER = 'Captures';
 // Taille d'une vignette de l'historique, en points (voir .history-thumb dans viewer.css).
 const THUMB = { width: 40, height: 52 };
+const DEVICE_LABELS = { telephone: 'Téléphone', tablette: 'Tablette', ordinateur: 'Ordinateur' };
 
 // Avec un cadrage, ce qui n'est pas écrit n'est pas seulement une annotation.
 const changesOf = ({ trim }) => (trim ? 'modifications' : 'annotations');
@@ -45,6 +46,7 @@ const els = {
   splitHint: document.getElementById('split-hint'),
   format: document.getElementById('format'),
   formatHint: document.getElementById('format-hint'),
+  deviceTabs: document.getElementById('device-tabs'),
   history: document.getElementById('history'),
   notice: document.getElementById('notice'),
   partialNotice: document.getElementById('partial-notice'),
@@ -91,6 +93,9 @@ let exportControl = null;
 let followLater = null;
 // Pendant cet export, le cadrage a changé ailleurs : son fichier garderait ce qui vient d'être retiré.
 let exportStale = false;
+// Lignes de l'historique : pour chaque capture, la capture qui porte sa ligne (la première d'un groupe), et ce que chaque ligne réunit.
+const rowOf = new Map();
+const rows = new Map();
 // Vignettes de l'historique, dessinées l'une après l'autre.
 let thumbQueue = Promise.resolve();
 // Prévient les autres pages de résultats ouvertes quand des annotations sont enregistrées.
@@ -123,6 +128,7 @@ async function init() {
   for (const target of [els.mat, window]) target.addEventListener('scroll', scheduleCurrent, { passive: true });
   window.addEventListener('resize', scheduleCurrent);
   setupCopyGestures();
+  setupDeviceTabs();
   annotationsChannel.onmessage = ({ data }) => followOtherPage(data).catch((err) => console.error(err));
   // Quitter la page tant que des annotations s'écrivent, ou après une écriture ratée, les perdrait : Chrome demande confirmation,
   // et l'écriture ratée est retentée pendant que la question est posée.
@@ -157,6 +163,7 @@ async function openCapture(id) {
       return;
     }
     const state = await getEdits(id);
+    const members = next.group ? await listGroup(next.group.id) : [];
     // Filet : « Annoter » étant refusé depuis le début, l'éditeur ne devrait pas être ouvert ; on ne change pas sa capture sous lui.
     if (editing) return;
     stitcher?.dispose();
@@ -183,6 +190,7 @@ async function openCapture(id) {
     els.notice.hidden = !record.truncated;
     els.partialNotice.textContent = [PARTIAL_NOTICES[record.partial], record.alsoWide && PARTIAL_NOTICES.wide].filter(Boolean).join(' ');
     els.partialNotice.hidden = !els.partialNotice.textContent;
+    showDeviceTabs(members, id);
     markHistory(id);
     // Le calcul des coupes démarre ici même et reprend le refus de « Annoter » (planning) avant que `leaving` ne le rende.
     layout = layoutParts();
@@ -348,7 +356,7 @@ async function closeAnnotate(captureId, top) {
   releaseEditorLock();
   const waited = edited;
   // La vignette de l'historique montre les annotations telles qu'on les laisse.
-  const thumb = historyItem(captureId)?.querySelector('.history-thumb');
+  const thumb = historyThumb(captureId);
   if (waited && thumb) queueThumb(thumb, record, { items: annotationState.items, trim: annotationState.trim });
   if (waited) await layoutParts().catch((err) => toast(`Mise à jour impossible : ${err.message}`));
   // Une autre capture a pu s'ouvrir pendant le recalcul : le focus appartient alors à ce que la personne vient de choisir.
@@ -409,7 +417,7 @@ async function followOtherPage({ captureId, items, trim = null }) {
   }
   const edits = { items, trim };
   markEdited(captureId, edits);
-  const thumb = historyItem(captureId)?.querySelector('.history-thumb');
+  const thumb = historyThumb(captureId);
   const capture = thumb && (await getCapture(captureId));
   if (capture) queueThumb(thumb, capture, edits);
   if (record?.id === captureId && !editing) {
@@ -544,7 +552,7 @@ async function downloadParts(indices, trigger) {
       const blob = await painter.renderPart(part, format.type);
       lastId = await saveBlob(blob, name);
     }
-    const where = parts.length > 1 ? `Téléchargements › ${DOWNLOAD_FOLDER} › ${baseName()}` : `Téléchargements › ${DOWNLOAD_FOLDER}`;
+    const where = parts.length > 1 || record.group ? `Téléchargements › ${DOWNLOAD_FOLDER} › ${baseName()}` : `Téléchargements › ${DOWNLOAD_FOLDER}`;
     toast(indices.length > 1 ? `${indices.length} images enregistrées dans ${where}.` : `Image enregistrée dans ${where}.`, {
       success: true,
       action: { label: 'Afficher dans le Finder', run: () => chrome.downloads.show(lastId) },
@@ -604,6 +612,7 @@ function setExporting(control) {
   const on = Boolean(control);
   for (const el of els.split.querySelectorAll('button')) el.disabled = on;
   for (const el of els.history.querySelectorAll('button')) el.disabled = on;
+  for (const el of els.deviceTabs.querySelectorAll('button')) el.disabled = on;
   for (const el of [...els.parts.querySelectorAll('.part-save'), els.menu.querySelector('[data-action="download"]')]) el.disabled = on;
   els.downloadAll.disabled = on;
   els.export.hidden = on;
@@ -623,7 +632,7 @@ async function startExport(kind) {
   }
   if (!parts.length || planning || leaving || editing || locking) return;
   // Copies locales : quoi qu'il arrive ensuite à la page, le fichier décrit ce qui était affiché au départ.
-  const frozen = { stitcher, parts: [...parts], format: FORMATS[settings.format], base: baseName() };
+  const frozen = { stitcher, parts: [...parts], format: FORMATS[settings.format], base: baseName(), file: exportName() };
   const names = frozen.parts.map((_, index) => fileName(index, frozen.format.ext).split('/').pop());
   const label = kind === 'pdf' ? 'PDF' : 'Zip';
   const control = new AbortController();
@@ -645,7 +654,7 @@ async function startExport(kind) {
     // Le fichier s'écrit encore : plus rien à annuler ici, et le succès ne se dit qu'une fois écrit.
     els.exportCancel.disabled = true;
     els.exportProgress.textContent = 'Enregistrement du fichier…';
-    const id = await saveBlob(blob, `${DOWNLOAD_FOLDER}/${frozen.base}/${frozen.base}.${kind}`);
+    const id = await saveBlob(blob, `${DOWNLOAD_FOLDER}/${frozen.base}/${frozen.file}.${kind}`);
     const problem = await downloadEnd(id);
     if (problem) {
       toast(`${label} non enregistré : ${problem}`, { lasting: true });
@@ -804,21 +813,27 @@ const PARTIAL_NOTICES = {
   wide: 'Ce bloc est plus large que la fenêtre : il est coupé aux bords de l’écran.',
 };
 
-// Un bloc ou une zone le dit dans son titre, ici et dans l'historique.
+// Un bloc, une zone ou un groupe le dit dans son titre, ici et dans l'historique.
 function titled(capture, name) {
-  const origin = { bloc: 'Bloc', zone: 'Zone' }[capture.origin];
+  const origin = capture.group ? 'Trois appareils' : { bloc: 'Bloc', zone: 'Zone' }[capture.origin];
   return origin ? `${origin} : ${name}` : name;
 }
 
+// Une redirection peut envoyer le téléphone sur m.site.fr : le groupe garde un seul dossier, au nom de l'adresse de départ.
 function baseName() {
-  const host = (hostOf(record.url) || 'capture').replace(/[^a-z0-9.-]+/gi, '-');
+  const host = (hostOf(record.group?.url ?? record.url) || 'capture').replace(/[^a-z0-9.-]+/gi, '-');
   const d = new Date(record.createdAt);
   const two = (n) => String(n).padStart(2, '0');
   const stamp = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}_${two(d.getHours())}h${two(d.getMinutes())}-${two(d.getSeconds())}`;
   return `${host}_${stamp}`;
 }
 
+function exportName() {
+  return record.group ? `${baseName()}-${record.group.device}` : baseName();
+}
+
 function fileName(index, ext) {
+  if (record.group) return `${DOWNLOAD_FOLDER}/${baseName()}/${exportName()}-${String(index + 1).padStart(2, '0')}.${ext}`;
   if (parts.length === 1) return `${DOWNLOAD_FOLDER}/${baseName()}.${ext}`;
   return `${DOWNLOAD_FOLDER}/${baseName()}/image-${String(index + 1).padStart(2, '0')}.${ext}`;
 }
@@ -831,7 +846,20 @@ function renderHistory(captures) {
     els.history.replaceChildren(empty);
     return;
   }
-  els.history.replaceChildren(...captures.map(historyEntry));
+  rowOf.clear();
+  rows.clear();
+  // Une ligne par capture, ou par groupe : `captures` les range du plus récent au plus ancien, le téléphone en tête de son groupe.
+  const leads = new Map();
+  for (const capture of captures) {
+    const key = capture.group?.id ?? capture.id;
+    const lead = leads.get(key) ?? capture;
+    leads.set(key, lead);
+    rowOf.set(capture.id, lead.id);
+    const row = rows.get(lead.id) ?? { groupId: capture.group?.id ?? null, members: [] };
+    row.members.push(capture.id);
+    rows.set(lead.id, row);
+  }
+  els.history.replaceChildren(...[...leads.values()].map(historyEntry));
 }
 
 // Une entrée de l'historique : la capture à ouvrir, et la croix qui la supprime.
@@ -846,7 +874,7 @@ function historyEntry(capture) {
   const title = text(titled(capture, capture.title || hostOf(capture.url) || 'Sans titre'), 'history-title');
   title.id = `history-title-${capture.id}`;
   const meta = text('', 'history-meta');
-  meta.dataset.host = hostOf(capture.url) || 'Page locale';
+  meta.dataset.host = hostOf(capture.group?.url ?? capture.url) || 'Page locale';
   meta.dataset.date = dates.format(capture.createdAt);
   const label = document.createElement('span');
   label.className = 'history-text';
@@ -855,13 +883,14 @@ function historyEntry(capture) {
 
   // Le nom reste celui du plan ; la description dit de quelle capture il s'agit (les croix portent toutes le même nom).
   const remove = button('', 'history-delete', () => removeFromHistory(capture.id));
-  remove.setAttribute('aria-label', 'Supprimer cette capture');
+  const removal = capture.group ? 'Supprimer ces captures' : 'Supprimer cette capture';
+  remove.setAttribute('aria-label', removal);
   remove.setAttribute('aria-describedby', title.id);
-  remove.title = 'Supprimer cette capture';
+  remove.title = removal;
   remove.innerHTML = CROSS;
 
   item.append(entry, remove);
-  showMeta(meta, editKinds.get(capture.id));
+  showMeta(meta, rowKind(capture.id));
   return item;
 }
 
@@ -897,7 +926,18 @@ async function drawThumb(canvas, capture, known) {
 }
 
 function historyItem(id) {
-  return els.history.querySelector(`.history-item[data-id="${id}"]`)?.closest('li');
+  return els.history.querySelector(`.history-item[data-id="${rowOf.get(id) ?? id}"]`)?.closest('li');
+}
+
+// La vignette d'une ligne montre sa première capture : retoucher l'onglet Tablette ne la change pas.
+function historyThumb(id) {
+  return (rowOf.get(id) ?? id) === id ? historyItem(id)?.querySelector('.history-thumb') : null;
+}
+
+// Ce que porte une ligne : une capture retouchée suffit à marquer son groupe, qui échappe alors au nettoyage.
+function rowKind(id) {
+  const kinds = (rows.get(rowOf.get(id) ?? id)?.members ?? [id]).map((member) => editKinds.get(member)).filter(Boolean);
+  return kinds.length ? { annotated: kinds.some((kind) => kind.annotated), trimmed: kinds.some((kind) => kind.trimmed) } : undefined;
 }
 
 // Une capture devient annotée à sa première annotation, recadrée à son premier cadrage, et redevient ordinaire quand on a tout effacé.
@@ -906,13 +946,56 @@ function markEdited(id, { items, trim }) {
   if (kind.annotated || kind.trimmed) editKinds.set(id, kind);
   else editKinds.delete(id);
   const meta = historyItem(id)?.querySelector('.history-meta');
-  if (meta) showMeta(meta, editKinds.get(id));
+  if (meta) showMeta(meta, rowKind(id));
 }
 
 function markHistory(id) {
+  const lead = rowOf.get(id) ?? id;
   for (const entry of els.history.querySelectorAll('.history-item')) {
-    entry.setAttribute('aria-current', String(entry.dataset.id === id));
+    entry.setAttribute('aria-current', String(entry.dataset.id === lead));
   }
+}
+
+// Les onglets d'un groupe. Ils restent en place d'un onglet à l'autre : le focus du clavier ne se perd pas.
+function showDeviceTabs(members, id) {
+  const groupId = members[0]?.group.id ?? '';
+  if (els.deviceTabs.dataset.group !== groupId) {
+    els.deviceTabs.dataset.group = groupId;
+    els.deviceTabs.replaceChildren(...members.map(({ id: memberId, group }) => {
+      const tab = button(DEVICE_LABELS[group.device], 'device-tab', () => openFromHistory(memberId));
+      tab.id = `device-tab-${group.device}`;
+      tab.dataset.id = memberId;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-controls', 'parts');
+      return tab;
+    }));
+  }
+  els.deviceTabs.hidden = !members.length;
+  els.parts.removeAttribute('role');
+  els.parts.removeAttribute('aria-labelledby');
+  for (const tab of els.deviceTabs.children) {
+    const selected = tab.dataset.id === id;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    if (selected) {
+      els.parts.setAttribute('role', 'tabpanel');
+      els.parts.setAttribute('aria-labelledby', tab.id);
+    }
+  }
+}
+
+// Flèches, Origine et Fin : le focus suit l'onglet choisi, qui s'ouvre aussitôt.
+function setupDeviceTabs() {
+  els.deviceTabs.addEventListener('keydown', (event) => {
+    const tabs = [...els.deviceTabs.children];
+    const at = tabs.indexOf(document.activeElement);
+    const targets = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 };
+    if (at < 0 || !(event.key in targets)) return;
+    event.preventDefault();
+    const tab = tabs[(targets[event.key] + tabs.length) % tabs.length];
+    tab.focus();
+    tab.click();
+  });
 }
 
 // L'éditeur est un calque modal : tant qu'il est ouvert, ni la capture affichée ni l'historique ne changent.
@@ -924,15 +1007,19 @@ function openFromHistory(id) {
 // Croix « Supprimer » : retire la capture et ses annotations, après confirmation.
 async function removeFromHistory(id) {
   if (editing) return;
-  const warning = editKinds.get(id)?.annotated ? ' et ses annotations' : '';
-  if (!confirm(`Supprimer cette capture${warning} ? Cette action est définitive.`)) return;
+  const row = rows.get(rowOf.get(id) ?? id) ?? { groupId: null, members: [id] };
+  const annotated = row.members.some((member) => editKinds.get(member)?.annotated);
+  const question = row.groupId
+    ? `Supprimer ces ${row.members.length} captures (téléphone, tablette, ordinateur)${annotated ? ' et leurs annotations' : ''} ? Cette action est définitive.`
+    : `Supprimer cette capture${annotated ? ' et ses annotations' : ''} ? Cette action est définitive.`;
+  if (!confirm(question)) return;
   // Pendant la suppression, « Annoter » est refusé : l'éditeur rouvert sur la capture qui disparaît recréerait ses annotations.
   leaving++;
   setAnnotateEnabled();
   try {
     // Une annotation encore en train de s'écrire recréerait une entrée orpheline juste après la suppression.
     await saveQueue;
-    await deleteCapture(id);
+    await (row.groupId ? deleteGroup(row.groupId) : deleteCapture(id));
   } catch (err) {
     toast(`Suppression impossible : ${err.message}`);
     return;
@@ -943,9 +1030,14 @@ async function removeFromHistory(id) {
   // Une suppression simultanée de la même capture l'a déjà retirée de la liste, et a fait le reste.
   if (!historyItem(id)) return;
   // Ses annotations non enregistrées disparaissent avec elle : plus rien à retenter.
-  if (failedSave?.captureId === id) forgetFailedSave();
+  if (row.members.includes(failedSave?.captureId)) forgetFailedSave();
   dropFromHistory(id);
-  if (record?.id === id) {
+  for (const member of row.members) {
+    editKinds.delete(member);
+    rowOf.delete(member);
+  }
+  rows.delete(id);
+  if (row.members.includes(record?.id)) {
     // La capture affichée disparaît : la plus récente restante la remplace, ou l'écran vide.
     const latest = els.history.querySelector('.history-item')?.dataset.id;
     if (latest) {
@@ -955,7 +1047,7 @@ async function removeFromHistory(id) {
       showNoCapture();
     }
   }
-  toast('Capture supprimée.', { success: true });
+  toast(row.groupId ? 'Captures supprimées.' : 'Capture supprimée.', { success: true });
 }
 
 // Retire l'entrée de la liste ; le focus passe à sa voisine pour que la navigation au clavier continue.
@@ -993,6 +1085,7 @@ function showEmpty(title, message) {
   els.meta.replaceChildren();
   els.notice.hidden = true;
   els.partialNotice.hidden = true;
+  showDeviceTabs([], null);
   els.splitHint.textContent = '';
   els.parts.removeAttribute('aria-busy');
   els.downloadAll.textContent = 'Tout télécharger';
