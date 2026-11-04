@@ -271,6 +271,7 @@ async function captureGroup(tab) {
   await publish({});
   try {
     const { ids } = await captureDevices(tab, {
+      shouldStop: () => cancelled,
       onStart: async ({ tempId, halt }) => {
         stopDevices = halt;
         // « Annuler » cliqué avant que l'onglet temporaire n'existe.

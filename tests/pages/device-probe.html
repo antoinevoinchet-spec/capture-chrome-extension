@@ -35,6 +35,21 @@
           }),
         );
       }
+      // Du contenu qui arrive après l'événement load, comme sur un site qui va chercher ses données.
+      if (params.has('late')) {
+        addEventListener('load', async () => {
+          await fetch(`/slow?ms=${params.get('late')}`);
+          document.body.insertAdjacentHTML('beforeend', '<div style="height: 600px; background: rgb(10, 200, 200)"></div>');
+        });
+      }
+      // Une requête qui ne finit jamais : la capture ne doit pas l'attendre sans limite.
+      if (params.has('hang')) addEventListener('load', () => fetch('/never'));
+      // Une redirection par script, en plein préchargement. `loop` : la page change d'adresse sans arrêt.
+      if (params.has('jsredirect') && /iPhone|iPad/.test(navigator.userAgent) && (params.has('loop') || !params.has('from'))) {
+        addEventListener('load', () => setTimeout(() => {
+          location.href = `/device-probe.html?from=js${params.has('loop') ? '&jsredirect=' + params.get('jsredirect') + '&loop=1' : ''}&n=${Math.random()}`;
+        }, Number(params.get('jsredirect'))));
+      }
       if (params.has('dense')) {
         // Du grain de type photo sur toute la hauteur, pour peser comme une vraie page lourde.
         const grain = document.createElement('canvas');

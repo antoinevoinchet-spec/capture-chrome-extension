@@ -1,5 +1,5 @@
 // Tests du lot 4 : téléphone, tablette, ordinateur.
-// Usage : node lot4.mjs <dossier de sortie> [essai|scenarios|reelle|appareils|groupe|site|long|visible|direct] [motif]
+// Usage : node lot4.mjs <dossier de sortie> [essai|scenarios|reelle|appareils|groupe|relecture|tierce|site|long|visible|direct] [motif]
 // `site` (un vrai site, dont l'adresse est obligatoire dans SITE_URL), `long` (100 000 points), `visible` et `direct` (une vraie fenêtre) ne tournent que si on les nomme.
 
 import { chromium } from 'playwright';
@@ -63,7 +63,7 @@ function solidPng(rgb) {
 
 // Deux serveurs (deux origines) : l'image paresseuse, et une redirection qui n'envoie que les mobiles vers l'autre origine (m.site.fr).
 async function servers() {
-  const stats = { lazy: 0, measures: [], fragile: 0 };
+  const stats = { lazy: 0, measures: [], fragile: 0, stuck: 0 };
   const lazy = solidPng(LAZY_COLOR);
   const pages = path.join(HERE, 'pages');
   let other = '';
@@ -78,6 +78,16 @@ async function servers() {
       for await (const chunk of req) body += chunk;
       stats.measures.push(JSON.parse(body));
       return res.writeHead(204).end();
+    }
+    if (url.pathname === '/slow') {
+      await sleep(Number(url.searchParams.get('ms')));
+      return res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+    }
+    if (url.pathname === '/never') return;
+    // Une page qui répond une fois, puis ne répond plus sans fermer la connexion.
+    if (url.pathname === '/stuck') {
+      if (stats.stuck-- <= 0) return;
+      url.pathname = '/device-probe.html';
     }
     // Une page qui répond une fois, puis plus du tout : la capture rencontre une vraie erreur de chargement.
     if (url.pathname === '/fragile') {
@@ -170,6 +180,7 @@ function installHelpers() {
       recordHeight: record.height,
       scale,
       sliceCount: slices.length,
+      crop,
       title: record.title,
       url: record.url,
       truncated: record.truncated,
@@ -446,8 +457,8 @@ async function groupAppareils(context, sw, env) {
     detail: `${done.error ?? ''} ${group.count} captures, ${group.firstDevice}, ${done.seconds} s`,
   }));
   await test('appareils : largeur des images égale à largeur × densité, à 2 px près', async () => ({
-    ok: Math.abs(telephone.width - 780) <= 2 && Math.abs(tablette.width - 1640) <= 2,
-    detail: `${telephone.width} ${tablette.width}`,
+    ok: Math.abs(telephone.recordWidth - 780) <= 2 && Math.abs(tablette.recordWidth - 1640) <= 2 && telephone.crop.w === telephone.width,
+    detail: `${telephone.recordWidth} ${tablette.recordWidth}`,
   }));
   await test('appareils : bon marqueur CSS par appareil', async () => ({
     ok: near(telephone.marker, [255, 0, 0]) && near(tablette.marker, [0, 255, 0]) && near(ordinateur.marker, [0, 0, 255]),
@@ -783,37 +794,57 @@ async function groupGroupe(context, sw, env) {
   });
 
   await test('groupe : chaque onglet a ses boutons et son annotation', async () => {
+    // Un vrai rectangle, tracé dans l'éditeur ouvert depuis l'onglet Tablette.
     await viewer.locator('figure.part .annotate').first().click();
     await viewer.waitForSelector('#editor:not([hidden])');
-    const width = await viewer.evaluate(() => document.querySelector('figure.part .part-size').textContent);
+    const stage = await viewer.locator('#editor-scroll').boundingBox();
+    const editorWidth = await viewer.evaluate(() => Math.round(Number(document.getElementById('editor').dataset.scale) * 1640));
+    await viewer.keyboard.press('r');
+    await viewer.mouse.move(stage.x + stage.width / 2 - 80, stage.y + 120);
+    await viewer.mouse.down();
+    await viewer.mouse.move(stage.x + stage.width / 2 + 80, stage.y + 260, { steps: 8 });
+    await viewer.mouse.up();
     await viewer.click('#editor-close');
     await viewer.waitForSelector('#editor', { state: 'hidden' });
+    await waitReady(viewer);
     const ids = await admin.evaluate(async (firstId) => {
       const db = await import(chrome.runtime.getURL('lib/db.js'));
       const first = await db.getCapture(firstId);
-      const members = await db.listGroup(first.group.id);
-      await db.saveAnnotations(members[1].id, [{ id: 'a1', type: 'rect', color: 'red', size: 'm', x: 10, y: 20, width: 300, height: 80 }]);
-      return members.map(({ id }) => id);
+      return (await db.listGroup(first.group.id)).map(({ id }) => id);
     }, firstId);
-    const kinds = await admin.evaluate(async (ids) => {
+    const counts = () => admin.evaluate(async (ids) => {
       const db = await import(chrome.runtime.getURL('lib/db.js'));
       return Promise.all(ids.map(async (id) => (await db.getAnnotations(id)).length));
     }, ids);
+    let kinds = await counts();
+    for (let i = 0; i < 20 && !same(kinds, [0, 1, 0]); i++) {
+      await sleep(250);
+      kinds = await counts();
+    }
+    const reddish = () => viewer.evaluate(() => {
+      const canvas = document.querySelector('figure.part .sheet canvas');
+      const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+      let found = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i] > 180 && data[i + 1] < 90 && data[i + 2] < 90) found++;
+      return found;
+    });
+    const red = {};
+    const buttons = [];
+    for (const label of ['Téléphone', 'Tablette', 'Ordinateur']) {
+      await showTab(viewer, label);
+      // Le marqueur du téléphone est rouge lui aussi : il n'est compté que sur la bande sous le marqueur, ici comparée à la tablette.
+      red[label] = await reddish();
+      buttons.push(await viewer.evaluate(() => [...document.querySelector('figure.part .part-actions').querySelectorAll('button')].map((el) => el.textContent).join()));
+    }
     await viewer.reload();
     await waitReady(viewer);
     await viewer.waitForFunction(() => document.querySelector('.history-mark'));
     const mark = await viewer.locator('.history-mark').innerText();
-    const buttons = [];
-    for (const label of ['Téléphone', 'Tablette', 'Ordinateur']) {
-      await showTab(viewer, label);
-      buttons.push(await viewer.evaluate(() => [...document.querySelector('figure.part .part-actions').querySelectorAll('button')].map((el) => el.textContent).join()));
-    }
-    await viewer.evaluate(() => null);
     await admin.evaluate(async (id) => {
       const db = await import(chrome.runtime.getURL('lib/db.js'));
       await db.saveAnnotations(id, []);
     }, ids[1]);
-    return { ok: same(kinds, [0, 1, 0]) && mark === 'annotée' && buttons.every((row) => row === 'Copier,Télécharger,Annoter') && /^1[\s ]?640/.test(width), detail: `${kinds} ; ${mark} ; ${buttons[0]} ; éditeur ${width}` };
+    return { ok: same(kinds, [0, 1, 0]) && mark === 'annotée' && buttons.every((row) => row === 'Copier,Télécharger,Annoter') && red.Tablette > 0 && red.Ordinateur === 0, detail: `${kinds} ; ${mark} ; rouge ${JSON.stringify(red)} ; ${buttons[0]} ; éditeur ${editorWidth}` };
   });
 
   await test('groupe : noms de fichiers et dossier', async () => {
@@ -934,6 +965,155 @@ async function groupGroupe(context, sw, env) {
   });
 
   await admin.close();
+}
+
+// --- Ce que la relecture neuve a demandé de vérifier ---
+
+async function groupRelecture(context, sw, env) {
+  console.log('\n— Pannes signalées par la relecture');
+  const { base, stats } = env;
+  const hook = async (address, opts = {}) => {
+    const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?header=0&h=600`);
+    const out = await Promise.race([runEssai(sw, tabId, { url: `${base}${address}`, only: 'telephone', ...opts }), sleep(70_000).then(() => ({ ok: false, error: 'bloquée au-delà de 70 s' }))]);
+    await page.close();
+    return out;
+  };
+
+  await test('chargement : le contenu arrivé après load est sur l’image', async () => {
+    const out = await hook('/device-probe.html?header=0&h=1500&late=1500');
+    const [device] = out.devices ?? [];
+    return { ok: out.ok && near(device.bottom, [10, 200, 200]) && device.recordHeight >= 2 * 2100, detail: out.error ?? `${device.bottom} ; ${device.recordHeight} px ; ${out.seconds} s` };
+  });
+  await test('chargement : une requête sans fin n’empêche pas la capture', async () => {
+    const out = await hook('/device-probe.html?header=0&h=1500&hang=1');
+    return { ok: out.ok && out.seconds <= 15, detail: out.error ?? `${out.seconds} s` };
+  });
+  await test('redirection par script en plein préchargement : capture faite sur la page d’arrivée', async () => {
+    const out = await hook('/device-probe.html?jsredirect=900');
+    const [device] = out.devices ?? [];
+    return { ok: out.ok && /from=js/.test(device.url) && near(device.marker, [255, 0, 0]), detail: out.error ?? `${device.url} ; ${out.seconds} s` };
+  });
+  await test('page qui change d’adresse sans arrêt : message en français, rien ne reste', async () => {
+    const out = await hook('/device-probe.html?jsredirect=900&loop=1');
+    return { ok: !out.ok && out.kind === 'DevicesError' && /change d'adresse/.test(out.error) && !out.tempLeft && !out.targetLeft, detail: `${out.kind} : ${out.error}` };
+  });
+  await test('serveur qui ne répond plus : message en français après 30 s, rien ne reste', async () => {
+    stats.stuck = 1;
+    const opened = await originPage(context, sw, base, '/stuck?origin=1');
+    const out = await Promise.race([runEssai(sw, opened.tabId, { only: 'telephone' }), sleep(50_000).then(() => ({ ok: false, error: 'bloquée au-delà de 50 s' }))]);
+    await opened.page.close();
+    return { ok: !out.ok && /ne répond pas/.test(out.error) && out.seconds <= 40 && !out.tempLeft, detail: `${out.error} (${out.seconds} s)` };
+  });
+  await test('adresse avec # : chaque appareil recharge vraiment la page', async () => {
+    const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?beacon=1&h=1500#ancre`);
+    await sleep(400);
+    stats.measures = [];
+    const started = Date.now();
+    const id = await sw.evaluate((tabId) => self.captureTab(tabId, 'devices'), tabId);
+    const seconds = (Date.now() - started) / 1000;
+    const widths = stats.measures.map(({ innerWidth }) => innerWidth);
+    await closeExtras(context);
+    await page.close();
+    return { ok: Boolean(id) && widths.length === 3 && widths[0] === 390 && widths[1] === 820 && /iPad/.test(stats.measures[1].userAgent) && seconds < 25, detail: `${widths} ; ${seconds.toFixed(1)} s` };
+  });
+  await test('zoom de 110 % sur le site : mêmes largeurs, et le zoom de l’onglet d’origine ne bouge pas', async () => {
+    const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?beacon=1&h=1500`);
+    await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1.1), tabId);
+    await sleep(400);
+    stats.measures = [];
+    const id = await sw.evaluate((tabId) => self.captureTab(tabId, 'devices'), tabId);
+    const group = id ? await sw.evaluate((id) => self.groupSummary(id), id) : { devices: [] };
+    const zoom = await sw.evaluate((tabId) => chrome.tabs.getZoom(tabId), tabId);
+    const widths = stats.measures.map(({ innerWidth }) => innerWidth);
+    await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1), tabId);
+    await closeExtras(context);
+    await page.close();
+    const [telephone, tablette] = group.devices;
+    return { ok: widths[0] === 390 && widths[1] === 820 && telephone?.recordWidth === 780 && tablette?.recordWidth === 1640 && near(telephone?.marker, [255, 0, 0]) && Math.abs(zoom - 1.1) < 0.01, detail: `${widths} ; ${group.devices.map(({ recordWidth }) => recordWidth)} ; zoom ${zoom}` };
+  });
+  await test('page plus large que le téléphone : toute sa largeur est sur l’image, en 780 px', async () => {
+    const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?header=0&h=600`);
+    const out = await runEssai(sw, tabId, { url: `${base}/device-wide.html`, only: 'telephone', keep: true });
+    await page.close();
+    const [device] = out.devices ?? [];
+    if (!out.ok) return { ok: false, detail: out.error };
+    const edge = await sw.evaluate(async () => {
+      const record = self.lastRecords[0];
+      const bmp = await createImageBitmap(record.slices[0].blob);
+      const canvas = new OffscreenCanvas(1, 1);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(bmp, record.crop.x + record.crop.w - 3, 40, 1, 1, 0, 0, 1, 1);
+      bmp.close();
+      return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+    });
+    return { ok: device.recordWidth === 780 && device.crop.w === device.width && near(edge, [200, 0, 200]), detail: `largeur ${device.recordWidth}, coupe ${device.crop.w}/${device.width}, ${device.measure.innerWidth} points de large ; bord droit ${edge}` };
+  });
+  await test('annuler pendant l’écriture en base : rien ne reste', async () => {
+    const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?header=0&h=1500`);
+    const stored = await storedCount(sw);
+    const out = await sw.evaluate(async (tabId) => {
+      let asked = 0;
+      const tab = await chrome.tabs.get(tabId);
+      try {
+        await self.captureGroupForTest(tab, { shouldStop: () => ++asked > 2 });
+        return { saved: true, asked };
+      } catch (err) {
+        return { saved: false, asked, kind: err.constructor.name, name: err.message };
+      }
+    }, tabId);
+    await page.close();
+    return { ok: !out.saved && out.kind === 'DevicesCancelled' && (await storedCount(sw)) === stored, detail: JSON.stringify(out) };
+  });
+  await test('fenêtre : après un échec, « Annuler » disparaît', async () => {
+    stats.fragile = 1;
+    const opened = await originPage(context, sw, base, '/fragile?origin=1');
+    const popup = await openPopup(context, sw, opened.tabId);
+    await popup.click('#devices');
+    await popup.waitForSelector('#error:not([hidden])', { timeout: 30_000 });
+    const state = await popup.evaluate(() => ({ cancel: document.getElementById('cancel').hidden, free: !document.getElementById('full').disabled, error: document.getElementById('error').textContent }));
+    await closeExtras(context);
+    await opened.page.close();
+    return { ok: state.cancel && state.free && /ne s'est pas chargée/.test(state.error), detail: JSON.stringify(state) };
+  });
+}
+
+// --- Une autre extension s'insère dans la page ---
+
+// Comme un gestionnaire de mots de passe ou un enregistreur d’écran : une iframe chrome-extension:// dans chaque page.
+async function thirdExtension(work) {
+  const dir = path.join(work, 'extension-tierce');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify({
+    manifest_version: 3,
+    name: 'Extension tierce',
+    version: '1.0',
+    content_scripts: [{ matches: ['<all_urls>'], js: ['inject.js'], run_at: 'document_idle' }],
+    web_accessible_resources: [{ resources: ['frame.html'], matches: ['<all_urls>'] }],
+  }));
+  await fs.writeFile(path.join(dir, 'inject.js'), `const f = document.createElement('iframe'); f.src = chrome.runtime.getURL('frame.html'); f.style.cssText = 'width:10px;height:10px;border:0'; document.documentElement.append(f);`);
+  await fs.writeFile(path.join(dir, 'frame.html'), '<!doctype html><title>x</title>');
+  return dir;
+}
+
+async function groupTierce(context, sw, env) {
+  console.log('\n— Une autre extension s’insère dans la page');
+  const { base, stats } = env;
+  await test('autre extension dans la page : Chrome coupe le débogueur, le message dit quoi faire, rien ne reste', async () => {
+    const { page, tabId } = await originPage(context, sw, base, '/device-probe.html?origin=1&beacon=1&h=1500');
+    const before = await originState(page);
+    const injected = await page.evaluate(() => [...document.querySelectorAll('iframe')].map((frame) => frame.src.split('/')[0]).join());
+    await sleep(400);
+    stats.measures = [];
+    const id = await sw.evaluate((tabId) => self.captureTab(tabId, 'devices'), tabId);
+    const noise = await silence(sw, tabId);
+    const group = id ? await sw.evaluate((id) => self.groupSummary(id), id) : { devices: [] };
+    const left = await sw.evaluate(() => self.leftovers());
+    const after = await originState(page);
+    await closeExtras(context);
+    await page.close();
+    await report('tierce', { id, noise, injected, count: group.count });
+    return { ok: injected === 'chrome-extension:' && left.tabs === 0 && left.targets === 0 && same(before, after) && !id && /autre extension/.test(noise.error ?? ''), detail: `iframe ${injected} ; ${id ? `${group.count} captures` : noise.error}` };
+  });
 }
 
 // --- Un vrai site ---
@@ -1120,12 +1300,14 @@ async function groupSansPlaywright(extension, env) {
     await evaluate(`(${installHelpers})()`);
     const tabId = await evaluate(`chrome.tabs.create({ url: ${JSON.stringify(`${env.base}/device-probe.html?origin=1`)}, active: true }).then((tab) => tab.id)`);
     await sleep(1500);
-    for (const [label, capture] of [
+    for (const [label, capture, minimized] of [
       ['caché, sans réglage', { focus: false }],
       ['caché, avec imitation du focus', { focus: true }],
+      ['fenêtre réduite', { focus: true }, true],
     ]) {
       env.stats.lazy = 0;
-      const out = await evaluate(`self.runEssai(${tabId}, ${JSON.stringify({ capture })})`);
+      if (minimized) await evaluate(`chrome.tabs.get(${tabId}).then((tab) => chrome.windows.update(tab.windowId, { state: 'minimized' })).then(() => true)`);
+      const out = await Promise.race([evaluate(`self.runEssai(${tabId}, ${JSON.stringify({ capture })})`), sleep(150_000).then(() => ({ ok: false, error: 'bloquée au-delà de 150 s' }))]);
       await report(`direct ${label}`, out);
       const rows = (out.devices ?? []).map(({ device, width, recordHeight, marker, bottom, headerFirst, headerNext, measure }) => `${device} ${width}×${recordHeight} vis=${measure.visibility} raf=${measure.raf} focus=${measure.hasFocus} marq=${marker} bas=${bottom} tête=${headerFirst}→${headerNext}`);
       console.log(`   ${label} : ${out.seconds} s, ${env.stats.lazy} chargements paresseux, ${out.error ?? ''}\n     ${rows.join('\n     ')}`);
@@ -1147,7 +1329,7 @@ async function main() {
   const sansHotes = await prepareExtension(WORK, { allHosts: false });
   // Ces points d'entrée n'existent que dans les copies de test.
   for (const copy of [extension, sansHotes]) {
-    await fs.appendFile(path.join(copy, 'background.js'), `\nimport * as devicesForTest from './devices/devices.js';\nimport { listCaptures as listCapturesForTest } from './lib/db.js';\nself.captureDevicesForTest = devicesForTest.shootDevices;\nself.DevicesForTest = devicesForTest.DEVICES;\nself.DevicesCancelled = devicesForTest.DevicesCancelled;\nself.listCapturesForTest = listCapturesForTest;\n`);
+    await fs.appendFile(path.join(copy, 'background.js'), `\nimport * as devicesForTest from './devices/devices.js';\nimport { listCaptures as listCapturesForTest } from './lib/db.js';\nself.captureDevicesForTest = devicesForTest.shootDevices;\nself.captureGroupForTest = devicesForTest.captureDevices;\nself.DevicesForTest = devicesForTest.DEVICES;\nself.DevicesCancelled = devicesForTest.DevicesCancelled;\nself.listCapturesForTest = listCapturesForTest;\n`);
   }
   const env = await servers();
   if (ONLY === 'direct') {
@@ -1157,12 +1339,15 @@ async function main() {
     console.log(`\n${results.length - failed}/${results.length} vérifications réussies`);
     process.exit(failed ? 1 : 0);
   }
-  const groups = { essai: groupEssai, scenarios: groupScenarios, reelle: groupReelle, appareils: groupAppareils, groupe: groupGroupe, site: groupSite, long: groupLong, visible: groupVisible };
+  const groups = { essai: groupEssai, scenarios: groupScenarios, reelle: groupReelle, appareils: groupAppareils, groupe: groupGroupe, relecture: groupRelecture, tierce: groupTierce, site: groupSite, long: groupLong, visible: groupVisible };
   const onDemand = new Set(['site', 'long', 'visible']);
   try {
     for (const [name, group] of Object.entries(groups)) {
       if (ONLY ? ONLY !== name : onDemand.has(name)) continue;
-      const context = name === 'visible'
+      const third = name === 'tierce' ? await thirdExtension(WORK) : null;
+      const context = third
+        ? await launch(`${extension},${third}`, 'profile-tierce', WORK)
+        : name === 'visible'
         ? await chromium.launchPersistentContext(path.join(WORK, 'profile-visible'), {
             channel: 'chromium',
             headless: false,

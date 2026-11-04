@@ -162,6 +162,8 @@ function setBusy(busy) {
 
 function showError(message) {
   setBusy(false);
+  els.cancel.hidden = true;
+  els.cancel.disabled = false;
   els.error.textContent = message;
   els.error.hidden = false;
 }

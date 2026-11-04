@@ -15,11 +15,19 @@ export const DEVICES = [
 
 const PAGE_OPTIONS = { preload: true, preloadStepMs: 120, preloadMaxMs: 8000, settleMs: 150, maxHeight: 100000 };
 const LOAD_TIMEOUT_MS = 15000;
+// Après load, le temps de laisser arriver ce que la page va chercher : Chrome signale un réseau calme (500 ms sans requête).
+const QUIET_TIMEOUT_MS = 5000;
+// Le serveur n'a toujours pas répondu : page bloquée, ou mot de passe demandé dans un onglet que personne ne regarde.
+const NAVIGATE_TIMEOUT_MS = 30000;
 
 export class DevicesCancelled extends Error {}
 export class DevicesError extends Error {}
 
-const DEBUGGER_STOPPED = "Le débogueur s'est arrêté pendant la capture. Relance la capture, sans ouvrir les outils de développement.";
+const DEBUGGER_STOPPED = "Le débogueur s'est arrêté pendant la capture. Les outils de développement ou une autre extension peuvent le couper : ferme-les, relance la capture, et si cela recommence, désactive tes autres extensions le temps de la capture.";
+const PAGE_MOVING = "La page change d'adresse pendant la capture et ne se stabilise pas. Relance la capture ; si cela recommence, utilise « Page entière ».";
+const PAGE_GONE = /navigated or closed|context was destroyed/i;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function assertCapturable(url) {
   // Sans clic sur l'icône (accès activeTab), Chrome ne donne pas l'adresse de l'onglet : on ne sait donc pas si la page est interdite, et le message le dit.
@@ -96,21 +104,50 @@ async function emulate(send, device, origin) {
   await send('Emulation.setUserAgentOverride', { userAgent: navigator.userAgent });
 }
 
-// Attend la fin du chargement, sans dépasser LOAD_TIMEOUT_MS : une page dont une publicité ne finit jamais de charger se capture quand même.
+// Attend la fin du chargement puis un réseau calme, sans dépasser leurs limites : une page dont une publicité ne finit jamais de charger se capture quand même.
 async function navigate(send, debuggee, url, watch) {
+  const calm = new Set();
+  let wanted = null;
+  let settle;
+  const quiet = new Promise((resolve) => {
+    settle = resolve;
+  });
   let onEvent;
   const loaded = new Promise((resolve) => {
-    onEvent = (source, method) => {
-      if (source.tabId === debuggee.tabId && method === 'Page.loadEventFired') resolve();
+    onEvent = (source, method, params) => {
+      if (source.tabId !== debuggee.tabId) return;
+      if (method === 'Page.loadEventFired') resolve();
+      if (method === 'Page.lifecycleEvent' && params.name === 'networkIdle') {
+        calm.add(params.loaderId);
+        if (params.loaderId === wanted) settle();
+      }
     };
     chrome.debugger.onEvent.addListener(onEvent);
   });
   try {
-    const { errorText } = await watch.race(send('Page.navigate', { url }));
+    const noAnswer = sleep(NAVIGATE_TIMEOUT_MS).then(() => {
+      throw new DevicesError("La page ne répond pas. Si elle demande un mot de passe, connecte-toi d'abord dans cet onglet, puis relance la capture.");
+    });
+    const { errorText, loaderId } = await watch.race(Promise.race([send('Page.navigate', { url }), noAnswer]));
     if (errorText) throw new DevicesError(`La page ne s'est pas chargée (${errorText}). Vérifie l'adresse et relance la capture.`);
-    await watch.race(Promise.race([loaded, new Promise((resolve) => setTimeout(resolve, LOAD_TIMEOUT_MS))]));
+    wanted = loaderId;
+    if (calm.has(wanted)) settle();
+    await watch.race(Promise.race([loaded, sleep(LOAD_TIMEOUT_MS)]));
+    await watch.race(Promise.race([quiet, sleep(QUIET_TIMEOUT_MS)]));
   } finally {
     chrome.debugger.onEvent.removeListener(onEvent);
+  }
+}
+
+// Une page peut encore se charger après une redirection par script. Rend la main dès qu'elle est prête, sans dépasser LOAD_TIMEOUT_MS.
+async function waitComplete(send, watch) {
+  const limit = Date.now() + LOAD_TIMEOUT_MS;
+  while (Date.now() < limit) {
+    watch.check();
+    const ask = send('Runtime.evaluate', { expression: 'document.readyState', returnByValue: true }).catch(() => null);
+    const answer = await watch.race(Promise.race([ask, sleep(2000)]));
+    if (answer?.result?.value === 'complete') return;
+    await watch.race(sleep(200));
   }
 }
 
@@ -122,6 +159,38 @@ function closeDialogs(debuggee, send) {
   };
   chrome.debugger.onEvent.addListener(onEvent);
   return () => chrome.debugger.onEvent.removeListener(onEvent);
+}
+
+// Une page qui change d'adresse pendant la capture (redirection par script, <meta refresh>) : les images seraient celles de deux pages.
+// On recommence une fois sur la page d'arrivée ; si elle bouge encore, on le dit.
+async function shootStable(send, debuggee, device, watch, onProgress) {
+  let moved = false;
+  const onEvent = (source, method, params) => {
+    if (source.tabId === debuggee.tabId && method === 'Page.frameNavigated' && !params.frame.parentId) moved = true;
+  };
+  chrome.debugger.onEvent.addListener(onEvent);
+  try {
+    for (let attempt = 0; ; attempt++) {
+      await waitComplete(send, watch);
+      if (attempt) await watch.race(sleep(500));
+      moved = false;
+      let record = null;
+      let failure = null;
+      try {
+        record = await shoot(send, device, watch, onProgress);
+      } catch (err) {
+        if (err instanceof DevicesCancelled || err instanceof DevicesError) throw err;
+        failure = err;
+      }
+      if (!moved && !PAGE_GONE.test(String(failure?.message))) {
+        if (failure) throw failure;
+        return record;
+      }
+      if (attempt) throw new DevicesError(PAGE_MOVING);
+    }
+  } finally {
+    chrome.debugger.onEvent.removeListener(onEvent);
+  }
 }
 
 async function shoot(send, device, watch, onProgress) {
@@ -151,13 +220,14 @@ async function shoot(send, device, watch, onProgress) {
     onProgress?.({ done: i + 1, total: positions.length });
   }
 
+  // Page plus large que l'écran sur un mobile : le navigateur dézoome, et toute sa largeur est sur l'image. On la garde.
   const crop = {
     x: Math.round(info.clip.x * scale),
     y: Math.round(info.clip.y * scale),
-    w: Math.round(info.clip.w * scale),
+    w: Math.round((device.mobile ? info.innerW : info.clip.w) * scale),
     h: Math.round(info.clip.h * scale),
   };
-  await evaluate(send, pageRestore, []).catch(() => {});
+  await watch.race(evaluate(send, pageRestore, [])).catch(() => {});
   const covered = Math.max(...slices.map((slice) => slice.y + crop.h));
   return {
     mode: 'full',
@@ -179,7 +249,7 @@ async function explainFailure(err, watch, origin, temp) {
   if (err instanceof DevicesError || err instanceof DevicesCancelled) return err;
   if (!(await chrome.tabs.get(origin.id).catch(() => null))) return new DevicesCancelled('origin-closed');
   if (!(await chrome.tabs.get(temp.id).catch(() => null))) return new DevicesCancelled('temp-closed');
-  if (/not attached|detached/i.test(String(err?.message))) return new DevicesError(DEBUGGER_STOPPED);
+  if (/not attached|detached|cannot access|chrome-extension/i.test(String(err?.message))) return new DevicesError(DEBUGGER_STOPPED);
   return err;
 }
 
@@ -199,12 +269,14 @@ export async function shootDevices(origin, options = {}) {
     await onStart?.({ tempId: temp.id, halt: watch.halt });
     await watch.race(chrome.debugger.attach(debuggee, '1.3')).catch((err) => {
       if (err instanceof DevicesCancelled) throw err;
-      throw new DevicesError(`Chrome a refusé le débogueur (${err.message}). Ferme les outils de développement de cette page et relance la capture.`);
+      console.warn('Débogueur refusé :', err);
+      throw new DevicesError("Chrome a refusé le débogueur. Une autre extension s'en sert peut-être : désactive-la sur chrome://extensions, puis relance la capture.");
     });
     attached = true;
     await watch.race(send('Page.enable'));
     await watch.race(send('Runtime.enable'));
     await watch.race(send('Page.setBypassCSP', { enabled: true }));
+    await watch.race(send('Page.setLifecycleEventsEnabled', { enabled: true }));
     if (focus) await watch.race(send('Emulation.setFocusEmulationEnabled', { enabled: true }));
     const group = { id: crypto.randomUUID(), url: origin.url };
     const createdAt = Date.now();
@@ -213,10 +285,12 @@ export async function shootDevices(origin, options = {}) {
       watch.check();
       const step = { device: device.key, label: device.label, index, count: devices.length };
       onProgress?.({ ...step, done: 0, total: 0 });
+      // Repartir d'une page vide : avec un # dans l'adresse, Chrome ne rechargerait pas la page, et le site ne verrait pas le nouvel appareil.
+      if (index) await watch.race(send('Page.navigate', { url: 'about:blank' }));
       await watch.race(emulate(send, device, origin));
       await navigate(send, debuggee, origin.url, watch);
       const measure = afterLoad ? await watch.race(afterLoad(send, device)) : null;
-      const record = await shoot(send, device, watch, (slice) => onProgress?.({ ...step, ...slice }));
+      const record = await shootStable(send, debuggee, device, watch, (slice) => onProgress?.({ ...step, ...slice }));
       // Une seule date par groupe : ses fichiers vont dans un seul dossier.
       record.createdAt = createdAt;
       record.group = { ...group, device: device.key };
@@ -234,13 +308,18 @@ export async function shootDevices(origin, options = {}) {
 }
 
 // Capture et enregistre les trois appareils. Rend `groupId` et les ids dans l'ordre des appareils : la page de résultats s'ouvre sur le premier.
+// `options.shouldStop()` : « Annuler » cliqué pendant l'écriture en base.
 export async function captureDevices(tab, options = {}) {
   const shots = await shootDevices(tab, options);
   const ids = [];
   try {
-    for (const { record } of shots) ids.push(await saveCapture(record));
+    for (const { record } of shots) {
+      if (options.shouldStop?.()) throw new DevicesCancelled('user');
+      ids.push(await saveCapture(record));
+    }
+    if (options.shouldStop?.()) throw new DevicesCancelled('user');
   } catch (err) {
-    // Un groupe entier ou rien : la base pleine ne laisse pas une capture sur trois.
+    // Un groupe entier ou rien : une annulation ou une base pleine ne laisse pas une capture sur trois.
     await Promise.all(ids.map((id) => deleteCapture(id).catch(() => {})));
     throw err;
   }
