@@ -1,6 +1,6 @@
 // Tests du lot 3 : capturer un bloc ou une zone. Le calque de sélection, le rectangle choisi, les cas limites.
 // Même Chromium et même extension que les autres suites (écran ×2).
-// Usage : node lot3.mjs <dossier de sortie> [calque|region|barres|limites] [motif]
+// Usage : node lot3.mjs <dossier de sortie> [calque|region|barres|limites|relecture] [motif]
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -325,11 +325,26 @@ async function groupCalque(context, sw, base) {
     }
   });
 
-  await test('calque : retiré si l’onglet se recharge', () =>
-    withPick(context, sw, tall, 'block', async ({ page }) => {
+  await test('calque : retiré à la sortie de la page, et absent après un rechargement', () =>
+    withPick(context, sw, tall, 'block', async ({ page, tabId }) => {
+      await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
+      const left = await hostCount(page);
+      await startPick(sw, tabId, 'block');
       await page.reload();
       await sleep(200);
-      return { ok: (await hostCount(page)) === 0, detail: 'après rechargement' };
+      return { ok: left === 0 && (await hostCount(page)) === 0, detail: `${left} calque à la sortie` };
+    }));
+
+  await test('calque : le clavier répond même si une iframe avait le focus', () =>
+    withPick(context, sw, `${base}/iframe.html`, 'block', async ({ page, tabId }) => {
+      await page.keyboard.press('Escape');
+      await sleep(200);
+      await page.frameLocator('#frame').locator('#inside').focus();
+      await startPick(sw, tabId, 'block');
+      const hosts = await hostCount(page);
+      await page.keyboard.press('Escape');
+      await sleep(300);
+      return { ok: hosts === 1 && (await hostCount(page)) === 0, detail: `${hosts} puis ${await hostCount(page)} calque` };
     }));
 
   await test('calque : la molette fait défiler la zone sous la souris', async () => {
@@ -465,21 +480,27 @@ async function groupCalque(context, sw, base) {
 
 // --- Le rectangle choisi ---
 
-// Choisit un élément précis, puis valide à la touche Entrée. Le parcours à la souris est vérifié dans le groupe `calque`.
-async function captureBlock(context, sw, page, tabId, selector) {
-  await startPick(sw, tabId, 'block');
-  await sw.evaluate(
+// Le calque montre ce choix comme après un survol : son cadre et son voile sont bien à l'écran quand on valide.
+function chooseElement(sw, tabId, selector) {
+  return sw.evaluate(
     async ({ tabId, selector }) => {
       await chrome.scripting.executeScript({
         target: { tabId },
         func: (selector) => {
           window.__capturePicker.current = document.querySelector(selector);
+          window.__capturePicker.redraw();
         },
         args: [selector],
       });
     },
     { tabId, selector },
   );
+}
+
+// Choisit un élément précis, puis valide à la touche Entrée. Le parcours à la souris est vérifié dans le groupe `calque`.
+async function captureBlock(context, sw, page, tabId, selector) {
+  await startPick(sw, tabId, 'block');
+  await chooseElement(sw, tabId, selector);
   const opened = nextViewer(context);
   await page.keyboard.press('Enter');
   const viewer = await opened;
@@ -507,6 +528,8 @@ function readImage(viewer, seek = {}) {
       const record = await getCapture(new URLSearchParams(location.search).get('id'));
       const stitcher = new Stitcher(record);
       const counts = Object.fromEntries(Object.keys(seek).map((name) => [name, 0]));
+      let holes = 0;
+      const holeRows = new Set();
       const runs = [];
       const edges = { left: new Set(), right: new Set() };
       const hit = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) <= 12;
@@ -521,6 +544,10 @@ function readImage(viewer, seek = {}) {
           for (let col = 0; col < record.width; col++) {
             const i = (row * record.width + col) * 4;
             const px = [data[i], data[i + 1], data[i + 2]];
+            if (data[i + 3] < 255) {
+              holes++;
+              holeRows.add(top + row);
+            }
             if (col === middle) {
               const last = runs.at(-1);
               if (last && hit(last[2], px)) last[1] = top + row + 1;
@@ -533,7 +560,7 @@ function readImage(viewer, seek = {}) {
         }
       }
       stitcher.dispose();
-      return { width: record.width, height: record.height, runs, counts, left: [...edges.left], right: [...edges.right] };
+      return { width: record.width, height: record.height, runs, counts, holes, holeRows: [...holeRows], left: [...edges.left], right: [...edges.right] };
     },
     seek,
   );
@@ -662,14 +689,17 @@ async function groupRegion(context, sw, base) {
           configurable: true,
         });
       });
+      await viewer.click('#download-all');
+      await viewer.waitForFunction(() => window.__names.length > 0, null, { timeout: 15000 });
       const seen = {
+        file: await viewer.evaluate(() => window.__names[0]),
         title: await viewer.locator('#title').innerText(),
         meta: await viewer.locator('#meta').innerText(),
         tab: await viewer.title(),
         row: await viewer.locator('.history-title').first().innerText(),
         url: record.url,
       };
-      const ok = /^Bloc : Bloc très haut$/.test(seen.title) && /127\.0\.0\.1/.test(seen.meta) && /^Bloc : /.test(seen.tab) && /^Bloc : /.test(seen.row) && /tall-block\.html/.test(seen.url) && record.origin === 'bloc';
+      const ok = /^Captures\/127\.0\.0\.1_[^/]+\.png$/.test(seen.file) && /^Bloc : Bloc très haut$/.test(seen.title) && /127\.0\.0\.1/.test(seen.meta) && /^Bloc : /.test(seen.tab) && /^Bloc : /.test(seen.row) && /tall-block\.html/.test(seen.url) && record.origin === 'bloc';
       return { ok, detail: JSON.stringify(seen) };
     }));
 
@@ -871,9 +901,9 @@ async function groupRegion(context, sw, base) {
             target: { tabId },
             func: () => {
               const fire = (type, x, y) => window.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true }));
-              fire('mousedown', 100, 100);
-              fire('mousemove', 300, 240);
-              fire('mouseup', 300, 240);
+              fire('mousedown', 100, 40);
+              fire('mousemove', 300, 180);
+              fire('mouseup', 300, 180);
             },
           });
         },
@@ -881,7 +911,10 @@ async function groupRegion(context, sw, base) {
       );
       viewer = await opened;
       const record = await viewerRecord(viewer);
-      return { ok: Math.abs(record.width - 500) <= 2 && Math.abs(record.height - 350) <= 2, detail: `${record.width}×${record.height}, attendu 500×350` };
+      // L'en-tête bleu finit à 60 points : il occupe les 20 premiers points de la zone, soit 50 pixels à cette échelle.
+      const { runs } = await readImage(viewer);
+      const blue = runs[0][2].join() === BLUE.join() && Math.abs(runs[0][1] - 50) <= 2;
+      return { ok: Math.abs(record.width - 500) <= 2 && Math.abs(record.height - 350) <= 2 && blue, detail: `${record.width}×${record.height}, attendu 500×350, première bande ${JSON.stringify(runs[0])}` };
     } finally {
       await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1), tabId).catch(() => {});
       await viewer?.close();
@@ -931,18 +964,7 @@ async function refused(context, sw, tabId, startIt) {
 async function chooseAndValidate(sw, page, tabId, selector) {
   await untilIdle(sw);
   await startPick(sw, tabId, 'block');
-  await sw.evaluate(
-    async ({ tabId, selector }) => {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        func: (selector) => {
-          window.__capturePicker.current = document.querySelector(selector);
-        },
-        args: [selector],
-      });
-    },
-    { tabId, selector },
-  );
+  await chooseElement(sw, tabId, selector);
   await page.keyboard.press('Enter');
 }
 
@@ -1165,6 +1187,278 @@ async function groupLimites(context, sw, base) {
     }));
 }
 
+// --- Écarts trouvés par le relecteur neuf ---
+
+const ONLY_MODAL = { modal: [204, 68, 0] };
+
+async function groupRelecture(context, sw, base) {
+  console.log('\n— Relecture');
+  const tall = `${base}/tall-block.html`;
+  const scrolled = (y) => ({
+    before: async (page) => {
+      await page.evaluate((y) => window.scrollTo(0, y), y);
+      await page.waitForTimeout(200);
+      await countScrolls(page);
+    },
+  });
+
+  for (const [label, query] of [['html { overflow-y: scroll }', 'modal&htmlscroll'], ['body { overflow-x: hidden } et hauteur 100 %', 'modal&bodyhidden']]) {
+    await test(`relecture : ${label}, page défilée, une modale fixe sort entière`, () =>
+      onBlock(
+        context,
+        sw,
+        `${tall}?${query}`,
+        '#modal',
+        async ({ page, viewer, record }) => {
+          const { counts } = await readImage(viewer, ONLY_MODAL);
+          const scrolls = await page.evaluate(() => window.__scrolls);
+          return { ok: record.width === 1000 && record.height === 600 && counts.modal === 600000 && !record.partial && scrolls === 0, detail: `${record.width}×${record.height}, ${record.partial}, ${scrolls} défilements` };
+        },
+        scrolled(1000),
+      ));
+    await test(`relecture : ${label}, un bloc à l’écran ne fait défiler personne`, () =>
+      onBlock(
+        context,
+        sw,
+        `${tall}?${query}`,
+        '#leaf',
+        async ({ page, record }) => {
+          const scrolls = await page.evaluate(() => window.__scrolls);
+          return { ok: record.width === 600 && record.height === 160 && scrolls === 0, detail: `${record.width}×${record.height}, ${scrolls} défilements` };
+        },
+        scrolled(300),
+      ));
+    await test(`relecture : ${label}, un long bloc reste assemblé`, () =>
+      onBlock(context, sw, `${tall}?${query.replace('modal&', '')}`, '#inner', async ({ page, viewer, record }) => {
+        const { wrong } = await compareToPage(context, page, viewer, await docRect(page, '#inner'));
+        return { ok: record.height === 6080 && wrong === 0 && !record.partial, detail: `${record.width}×${record.height}, différents ${wrong}` };
+      }));
+  }
+
+  await test('relecture : un en-tête fixe dans le bloc choisi ne se répète pas', () =>
+    onBlock(context, sw, `${tall}?childhead`, '#outer', async ({ page, viewer, record }) => {
+      const { counts } = await readImage(viewer, { blue: BLUE });
+      const { wrong, box } = await compareToPage(context, page, viewer, await docRect(page, '#outer'));
+      return { ok: counts.blue === 0 && wrong === 0 && record.height === 6240, detail: `bleu ${counts.blue}, différents ${wrong} ${JSON.stringify(box)}` };
+    }));
+
+  await test('relecture : un bloc qui tient à l’écran garde ses enfants fixes', () =>
+    onBlock(context, sw, `${tall}?childhead`, '#head', async ({ record }) => ({ ok: record.height === 120, detail: `${record.width}×${record.height}` })));
+
+  for (const [label, selector] of [['la zone principale elle-même', '#main'], ['un bloc qui la remplit', '#tall']]) {
+    await test(`relecture : coque fixe, ${label} est assemblé`, () =>
+      onBlock(context, sw, `${base}/shell.html`, selector, async ({ viewer, record }) => {
+        const { runs } = await readImage(viewer);
+        const first = runs[0][2].join() === CYAN.join();
+        const last = runs.at(-1)[2].join() === MAGENTA.join();
+        return { ok: record.height === 5040 * 2 && !record.partial && first && last, detail: `${record.width}×${record.height}, ${record.partial}, ${runs.length} bandes` };
+      }));
+  }
+
+  await test('relecture : zone principale bordée, aucune mention de largeur', () =>
+    onBlock(context, sw, `${base}/shell.html?border`, '#main', async ({ viewer, record }) => {
+      const shown = await viewer.locator('#partial-notice').isVisible();
+      return { ok: !record.partial && !shown, detail: `${record.partial}, mention ${shown}` };
+    }));
+
+  await test('relecture : fixe, trop haut et trop large, le résultat dit les deux', () =>
+    onBlock(context, sw, `${tall}?tallwide`, '#tallwide', async ({ viewer }) => {
+      const text = (await viewer.locator('#partial-notice').innerText()).trim();
+      return { ok: /partie visible/.test(text) && /coupé/.test(text), detail: text };
+    }));
+
+  await test('relecture : page à défilement aligné, le bloc reste juste', () =>
+    onBlock(context, sw, `${tall}?snap`, '#inner', async ({ page, viewer, record }) => {
+      const { wrong, box } = await compareToPage(context, page, viewer, await docRect(page, '#inner'));
+      const kept = await page.evaluate(() => getComputedStyle(document.documentElement).scrollSnapType);
+      return { ok: wrong === 0 && record.height === 6080 && /mandatory/.test(kept), detail: `différents ${wrong} ${JSON.stringify(box)}, page ${kept}` };
+    }));
+
+  await test('relecture : petites sections à défilement aligné, le bloc reste juste', () =>
+    // La page démarre alignée sur sa première section : la référence y montrerait l'en-tête. Les bandes du bloc, elles, se lisent directement.
+    onBlock(context, sw, `${tall}?snapsmall`, '#inner', async ({ viewer, record }) => {
+      const { runs, counts } = await readImage(viewer, { blue: BLUE });
+      const even = runs.slice(1, -1).every(([a, b]) => b - a === 200);
+      return { ok: record.height === 6080 && runs.length === 32 && even && counts.blue === 0, detail: `${record.width}×${record.height}, ${runs.length} bandes, bleu ${counts.blue}` };
+    }));
+
+  await test('relecture : le bloc seul raccourcit pendant la capture, refus', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    try {
+      const out = await refused(context, sw, tabId, async () => {
+        await chooseAndValidate(sw, page, tabId, '#inner');
+        await sleep(2600);
+        await page.evaluate(() => (document.getElementById('inner').style.height = '100px'));
+      });
+      return { ok: /page a bougé/.test(out.title) && out.viewers === 0, detail: out.title };
+    } finally {
+      await page.close();
+    }
+  });
+
+  await test('relecture : du contenu s’ajoute au-dessus pendant la capture, le bloc reste juste', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    let viewer;
+    try {
+      const opened = nextViewer(context);
+      await chooseAndValidate(sw, page, tabId, '#inner');
+      await sleep(2600);
+      await page.evaluate(() => (document.getElementById('above').style.height = '430px'));
+      viewer = await opened;
+      await viewerRecord(viewer);
+      const { wrong, box } = await compareToPage(context, page, viewer, await docRect(page, '#inner'));
+      return { ok: wrong === 0, detail: `différents ${wrong} ${JSON.stringify(box)}` };
+    } finally {
+      await viewer?.close();
+      await page.close();
+    }
+  });
+
+  await test('relecture : la page raccourcit pendant la capture, refus plutôt qu’une image fausse', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    try {
+      const out = await refused(context, sw, tabId, async () => {
+        await chooseAndValidate(sw, page, tabId, '#inner');
+        await sleep(2600);
+        await page.evaluate(() => {
+          document.getElementById('inner').style.height = '100px';
+          document.getElementById('below').remove();
+        });
+      });
+      return { ok: /page a bougé/.test(out.title) && out.viewers === 0, detail: out.title };
+    } finally {
+      await page.close();
+    }
+  });
+
+  await test('relecture : zoom à 110 %, aucune ligne vide entre les tranches', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    let viewer;
+    try {
+      await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1.1), tabId);
+      await page.waitForFunction(() => Math.abs(window.devicePixelRatio - 2.2) < 0.01);
+      const shot = await captureBlock(context, sw, page, tabId, '#inner');
+      viewer = shot.viewer;
+      const { holes, holeRows, width, height } = await readImage(viewer);
+      return { ok: holes === 0 && height > 6000, detail: `${width}×${height}, ${holes} pixels vides aux lignes ${holeRows.join()}, ${shot.record.sliceCount} tranches, découpe ${JSON.stringify(shot.record.crop)}, échelle ${shot.record.scale}` };
+    } finally {
+      await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1), tabId).catch(() => {});
+      await viewer?.close();
+      await page.close();
+    }
+  });
+
+  const watchPage = (page) =>
+    page.evaluate(() => {
+      window.__events = [];
+      for (const type of ['mousedown', 'mouseup', 'click', 'dblclick']) document.addEventListener(type, (event) => window.__events.push(type), true);
+    });
+
+  await test('relecture : double clic, le second clic n’atteint pas la page', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    let viewer;
+    try {
+      await watchPage(page);
+      await startPick(sw, tabId, 'block');
+      await page.mouse.move(300, 700);
+      await page.waitForTimeout(100);
+      const opened = nextViewer(context);
+      await page.mouse.dblclick(300, 700);
+      viewer = await opened;
+      await viewerRecord(viewer);
+      const events = await page.evaluate(() => window.__events);
+      return { ok: events.length === 0, detail: events.join() || 'aucun' };
+    } finally {
+      await viewer?.close();
+      await page.close();
+    }
+  });
+
+  await test('relecture : après un tracé de zone, aucun clic n’atteint la page', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    let viewer;
+    try {
+      await watchPage(page);
+      const shot = await captureZone(context, sw, page, tabId, { x: 200, y: 500, w: 200, h: 100 });
+      viewer = shot.viewer;
+      const events = await page.evaluate(() => window.__events);
+      return { ok: events.length === 0, detail: events.join() || 'aucun' };
+    } finally {
+      await viewer?.close();
+      await page.close();
+    }
+  });
+
+  await test('relecture : calque et page entière lancés ensemble, le calque ne reste pas', async () => {
+    const { page, tabId } = await openTab(context, sw, `${base}/iframe.html`);
+    let viewer;
+    try {
+      const opened = nextViewer(context);
+      await sw.evaluate(async (tabId) => {
+        await Promise.allSettled([self.startPick(tabId, 'block'), self.captureTab(tabId, 'visible')]);
+      }, tabId);
+      viewer = await opened;
+      await viewerRecord(viewer);
+      await sleep(300);
+      const hosts = await hostCount(page);
+      return { ok: hosts === 0, detail: `${hosts} calque` };
+    } finally {
+      await viewer?.close();
+      await page.close();
+    }
+  });
+
+  await test('relecture : choix validé dans une autre fenêtre pendant une capture, le refus se voit', async () => {
+    await untilIdle(sw);
+    const opening = context.waitForEvent('page', { predicate: (p) => p.url().includes('iframe.html') });
+    const secondTab = await sw.evaluate(async (url) => (await chrome.windows.create({ url, focused: false })).tabs[0].id, `${base}/iframe.html`);
+    const second = await opening;
+    await second.waitForLoadState();
+    const { page, tabId } = await openTab(context, sw, tall);
+    try {
+      await startPick(sw, secondTab, 'block');
+      await second.mouse.move(100, 100);
+      await sleep(100);
+      const running = sw.evaluate((tabId) => self.captureTab(tabId, 'full'), tabId);
+      await sleep(1500);
+      await second.mouse.click(100, 100);
+      await sleep(500);
+      const title = await sw.evaluate((tabId) => chrome.action.getTitle({ tabId }), secondTab);
+      const viewerOpened = context.waitForEvent('page', { predicate: (p) => p.url().includes('/viewer/viewer.html'), timeout: 60_000 }).catch(() => null);
+      await running;
+      const viewer = await viewerOpened;
+      await viewer?.close();
+      return { ok: /déjà en cours/.test(title), detail: title };
+    } finally {
+      for (const p of context.pages()) if (p.url().includes('/popup/popup.html')) await p.close();
+      await second.close();
+      await page.close();
+    }
+  });
+
+  await test('relecture : Annuler après la mort du service worker, la fenêtre ne reste pas figée', async () => {
+    await untilIdle(sw);
+    await sw.evaluate(() => chrome.storage.session.set({ capturing: { tabId: 1, done: 1, total: 4 } }));
+    const popup = await context.newPage();
+    try {
+      await popup.goto(`chrome-extension://${new URL(sw.url()).host}/popup/popup.html`);
+      await popup.waitForSelector('#cancel:not([hidden])', { timeout: 5000 });
+      await popup.click('#cancel');
+      await popup.waitForFunction(() => document.getElementById('status').hidden, null, { timeout: 5000 });
+      const state = await popup.evaluate(() => ({ cancel: document.getElementById('cancel').hidden, enabled: !document.getElementById('full').disabled }));
+      return { ok: state.cancel && state.enabled, detail: JSON.stringify(state) };
+    } finally {
+      await sw.evaluate(() => chrome.storage.session.remove('capturing'));
+      await popup.close();
+    }
+  });
+
+  await test('relecture : une panne inconnue dit quoi faire', async () => {
+    const message = await sw.evaluate(async () => (await self.explainForTest(new Error('Image readback failed'))).message);
+    return { ok: /Image readback failed/.test(message) && /Relance/.test(message), detail: message };
+  });
+}
+
 async function main() {
   await fs.rm(WORK, { recursive: true, force: true });
   await fs.mkdir(WORK, { recursive: true });
@@ -1172,7 +1466,7 @@ async function main() {
   const server = await serve(path.join(HERE, 'pages'));
   const base = `http://127.0.0.1:${server.address().port}`;
   // Un navigateur par groupe : l'essai d'endormissement remplace le service worker.
-  const groups = { calque: groupCalque, region: groupRegion, barres: groupBarres, limites: groupLimites };
+  const groups = { calque: groupCalque, region: groupRegion, barres: groupBarres, limites: groupLimites, relecture: groupRelecture };
   try {
     for (const [name, group] of Object.entries(groups)) {
       if (ONLY && ONLY !== name) continue;

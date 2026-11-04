@@ -86,7 +86,7 @@ export function pickerStart(startMode) {
     // Sans cela, le z-index suffit presque toujours.
   }
 
-  const picker = { mode: startMode, root, current: null, setMode, stop };
+  const picker = { mode: startMode, root, current: null, setMode, stop, redraw };
   window.__capturePicker = picker;
   // Les flèches et les touches arrivent ici, pas dans une iframe qui aurait gardé le focus.
   if (/^(IFRAME|FRAME)$/.test(document.activeElement?.tagName ?? '')) window.focus();
@@ -204,7 +204,17 @@ export function pickerStart(startMode) {
 
   async function validate(rect) {
     const { mode } = picker;
-    await stop();
+    const stopped = stop();
+    // Le second clic d'un double clic, ou le clic qui suit un tracé, n'atteint pas la page : il suivrait un lien, ou ouvrirait un menu qui finirait sur l'image.
+    const swallow = (event) => {
+      if (!event.type.startsWith('pointer')) event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    for (const name of SWALLOWED) window.addEventListener(name, swallow, { capture: true });
+    setTimeout(() => {
+      for (const name of SWALLOWED) window.removeEventListener(name, swallow, { capture: true });
+    }, 500);
+    await stopped;
     chrome.runtime.sendMessage({ type: 'pick-result', mode, rect, zoom: window.devicePixelRatio, innerW: window.innerWidth }).catch(() => {});
   }
 

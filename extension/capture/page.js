@@ -33,7 +33,9 @@ export async function pagePrepare(options) {
   // Défilement instantané et barres de défilement masquées le temps de la capture.
   const style = document.createElement('style');
   style.textContent =
-    'html, body { scroll-behavior: auto !important; } * { scrollbar-width: none !important; } ::-webkit-scrollbar { display: none !important; }';
+    'html, body { scroll-behavior: auto !important; } * { scrollbar-width: none !important; } ::-webkit-scrollbar { display: none !important; }' +
+    // Pour un bloc, chaque tranche doit tomber exactement où on l'attend : pas de défilement aligné par le site.
+    (options.region ? ' * { scroll-snap-type: none !important; }' : '');
   (document.head || document.documentElement).appendChild(style);
   state.styleEl = style;
   await frame();
@@ -46,7 +48,15 @@ export async function pagePrepare(options) {
     for (let up = el; up; up = parentOf(up)) chain.push(up);
     return chain;
   };
-  const isScroller = (el) => el.scrollHeight > el.clientHeight + 8 && /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY);
+  // <html> ne défile jamais lui-même, c'est la fenêtre. <body> non plus quand <html> n'a pas de style de débordement : le sien passe à la fenêtre.
+  const isScroller = (el) => {
+    if (el === document.documentElement) return false;
+    if (el === document.body) {
+      const { overflowX, overflowY } = getComputedStyle(document.documentElement);
+      if (overflowX === 'visible' && overflowY === 'visible') return false;
+    }
+    return el.scrollHeight > el.clientHeight + 8 && /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY);
+  };
   const clientBox = (el) => {
     const r = el.getBoundingClientRect();
     return { left: r.left + el.clientLeft, top: r.top + el.clientTop, right: r.left + el.clientLeft + el.clientWidth, bottom: r.top + el.clientTop + el.clientHeight };
@@ -62,10 +72,6 @@ export async function pagePrepare(options) {
   // Un bloc qui défile lui-même peut être la zone principale, à assembler : on ne le sait qu'après l'avoir cherchée.
   let still = fits && !isScroller(pick);
   let partial = null;
-  if (pick && !still && chainOf(pick).some((el) => getComputedStyle(el).position === 'fixed')) {
-    still = true;
-    partial = 'fixed';
-  }
 
   const windowScrolls = () => {
     if (root.scrollHeight <= window.innerHeight + 8) return false;
@@ -94,16 +100,16 @@ export async function pagePrepare(options) {
     }
     if (bestArea < window.innerWidth * window.innerHeight * 0.15) target = null;
   }
-  // Une autre zone qui défile à l'intérieur de la page ne s'assemble pas : on prend ce qu'elle montre.
-  const parentScroller = pick && !still ? chainOf(pick).slice(1).find((el) => isScroller(el) && (target || (el !== document.body && el !== document.documentElement))) : null;
-  if (pick && !still && (target ? pick !== target && parentScroller !== target : parentScroller)) {
-    still = true;
-    partial = 'scroller';
-    target = null;
-  }
-  if (pick && !still && fits && pick !== target) {
-    still = true;
-    target = null;
+  // Seule la zone principale s'assemble. Une autre zone qui défile, ou un bloc fixe hors de cette zone, donne ce qu'il montre.
+  if (pick && !still) {
+    const parentScroller = chainOf(pick).slice(1).find(isScroller);
+    const fixed = chainOf(pick).some((el) => getComputedStyle(el).position === 'fixed');
+    const inMain = target ? pick === target || parentScroller === target : !parentScroller && !fixed;
+    if (pick !== target && (fits || !inMain)) {
+      still = true;
+      if (!fits) partial = fixed && !parentScroller ? 'fixed' : 'scroller';
+      target = null;
+    }
   }
   state.target = target;
 
@@ -186,6 +192,14 @@ export async function pagePrepare(options) {
   if (pick) {
     for (const el of chainOf(pick)) keep.add(el);
     for (const el of pick.querySelectorAll('*')) keep.add(el);
+    // Si on défile, un enfant fixe n'est plus « le bloc » : il se juge comme les autres éléments fixes, et aucun d'eux ne se juge sur lui.
+    if (!still) {
+      for (const el of pick.querySelectorAll('*')) {
+        if (getComputedStyle(el).position !== 'fixed') continue;
+        keep.delete(el);
+        for (const inner of el.querySelectorAll('*')) keep.delete(inner);
+      }
+    }
     // Un bloc collant suit le défilement comme le reste de la page : on ne le force que s'il faut défiler.
     if (!still) {
       for (const el of chainOf(pick)) if (getComputedStyle(el).position === 'sticky') state.unstick(el);
@@ -218,10 +232,18 @@ export async function pagePrepare(options) {
       height = Math.min(box.bottom - start, scrollHeight()) - top;
     }
     if (right - left < 1 || height < 1) return { empty: true };
-    if (box.width > right - left + 1) partial ??= 'wide';
-    if (pick !== target && pick.scrollHeight > pick.clientHeight + 8 && isScroller(pick)) partial ??= 'scroller';
+    if (pick !== target && isScroller(pick)) partial ??= 'scroller';
+    // La zone principale se mesure sans sa bordure : c'est son contenu qu'on assemble.
+    const wide = (pick === target ? pick.clientWidth : box.width) > right - left + 1;
+    const alsoWide = wide && Boolean(partial);
+    if (wide) partial ??= 'wide';
     const reach = Math.min(height, options.maxHeight);
-    region = { left, width: right - left, top, height: reach, band: Math.min(clip.h, reach), still, start: target ? target.scrollTop : window.scrollY, partial, truncated: height > options.maxHeight };
+    region = { left, width: right - left, top, height: reach, band: Math.min(clip.h, reach), still, start: target ? target.scrollTop : window.scrollY, partial, alsoWide, truncated: height > options.maxHeight };
+    // Combien le haut de l'image est plus bas que le haut du bloc (un bloc qui commence au-dessus du début de la page).
+    if (!still && pick !== target) {
+      region.skip = top - (box.top - (target ? clientBox(target).top - target.scrollTop : -window.scrollY));
+      state.pick = pick;
+    }
     // Les éléments fixes se jugent à la place où le bloc sera capturé.
     if (!still) {
       scrollToY(top);
@@ -240,7 +262,7 @@ export async function pagePrepare(options) {
     if (right <= left || bottom <= top) return false;
     const stack = document.elementsFromPoint((left + right) / 2, (top + bottom) / 2);
     const own = stack.findIndex((hit) => el.contains(hit));
-    return own < 0 || own < stack.findIndex((hit) => keep.has(hit));
+    return own < 0 || own < stack.findIndex((hit) => keep.has(hit) && !el.contains(hit));
   };
   const hasSurface = (el) => {
     const { backgroundImage, backgroundColor } = getComputedStyle(el);
@@ -265,15 +287,19 @@ export async function pagePrepare(options) {
   const stuck = [];
   const low = [];
   for (const el of document.querySelectorAll('body *')) {
-    // Un enfant collant du bloc, si on défile, reprend sa place comme dans une page entière : sinon il se répéterait sur chaque tranche.
-    const stickyChild = pick && !still && el !== pick && pick.contains(el);
-    if (keep.has(el) && !stickyChild) continue;
+    // Si on défile, un enfant du bloc suit la même règle que le reste de la page : collant, il reprend sa place ; fixe, il est masqué s'il passe
+    // devant. Sinon il se répéterait sur chaque tranche.
+    const scrolledChild = pick && !still && el !== pick && pick.contains(el);
+    if (keep.has(el) && !scrolledChild) continue;
     const position = getComputedStyle(el).position;
     if (position !== 'fixed' && position !== 'sticky') continue;
     if (pick && position === 'fixed') {
-      if (keep.has(el)) continue;
-      if (coversRegion(el)) state.bottomEls.push(el);
-      else keep.add(el);
+      if (coversRegion(el)) {
+        keep.delete(el);
+        state.bottomEls.push(el);
+      } else {
+        keep.add(el);
+      }
       continue;
     }
     const box = el.getBoundingClientRect();
@@ -357,6 +383,15 @@ export async function pageScrollTo(y, hideHeaders) {
     if (hide(lateFixed) + lateStuck.length) await frame();
   }
   return target ? target.scrollTop : window.scrollY;
+}
+
+// Où est le bloc, maintenant : le haut d'une tranche se lit sur lui, pas sur un calcul fait avant que la page ne bouge.
+export function pageRegionRect() {
+  const { pick } = window.__captureState;
+  if (!pick) return null;
+  if (!pick.isConnected) return { gone: true };
+  const { top, height } = pick.getBoundingClientRect();
+  return { top, height };
 }
 
 export function pageRestore() {

@@ -181,8 +181,8 @@ async function openCapture(id) {
       text(''),
     );
     els.notice.hidden = !record.truncated;
-    els.partialNotice.textContent = PARTIAL_NOTICES[record.partial] ?? '';
-    els.partialNotice.hidden = !PARTIAL_NOTICES[record.partial];
+    els.partialNotice.textContent = [PARTIAL_NOTICES[record.partial], record.alsoWide && PARTIAL_NOTICES.wide].filter(Boolean).join(' ');
+    els.partialNotice.hidden = !els.partialNotice.textContent;
     markHistory(id);
     // Le calcul des coupes démarre ici même et reprend le refus de « Annoter » (planning) avant que `leaving` ne le rende.
     layout = layoutParts();

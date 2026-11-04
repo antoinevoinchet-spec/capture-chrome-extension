@@ -1,4 +1,4 @@
-import { pagePrepare, pageScrollTo, pageRestore } from './capture/page.js';
+import { pagePrepare, pageScrollTo, pageRegionRect, pageRestore } from './capture/page.js';
 import { pickerStart, pickerStop } from './capture/picker.js';
 import { saveCapture, pruneCaptures } from './lib/db.js';
 import { setupWebImage } from './web-image/save-web-image.js';
@@ -6,6 +6,9 @@ import { setupWebImage } from './web-image/save-web-image.js';
 // Chrome refuse plus de 2 appels par seconde à captureVisibleTab.
 const CAPTURE_INTERVAL_MS = 550;
 const KEEP_CAPTURES = 15;
+const BLOCK_GONE = 'Le bloc choisi a disparu de la page. Relance la capture et choisis-le de nouveau.';
+const PAGE_MOVED = "La page a bougé pendant la capture (elle a changé de hauteur). Relance la capture.";
+const BUSY_MESSAGE = "Une capture est déjà en cours : attends qu'elle finisse, puis recommence.";
 // La sélection en cours, dans storage.session : le service worker peut s'endormir pendant qu'on choisit.
 const PICK_KEY = 'picking';
 // La capture d'un bloc en cours, relue par la fenêtre de l'icône à sa réouverture pour proposer « Annuler ».
@@ -31,7 +34,7 @@ chrome.storage.session.remove(CAPTURING_KEY);
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type !== 'capture') return false;
   if (running) {
-    sendResponse({ ok: false, error: 'Une capture est déjà en cours.' });
+    sendResponse({ ok: false, error: BUSY_MESSAGE });
     return false;
   }
   chrome.tabs.get(msg.tabId).then((tab) => runCapture(tab, msg.mode));
@@ -49,6 +52,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg?.type === 'capture-cancel') {
     cancelled = true;
+    // Le service worker est mort pendant la capture : plus rien à arrêter, la fenêtre doit quand même reprendre la main.
+    if (!running) {
+      chrome.storage.session.remove(CAPTURING_KEY);
+      notify({ type: 'capture-cancelled' });
+    }
     return false;
   }
   if (msg?.type === 'pick-cancel') {
@@ -58,7 +66,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Vient du calque : le service worker a pu s'endormir pendant le choix, ce message le réveille.
   if (msg?.type === 'pick-result' && sender.tab) {
     chrome.storage.session.remove(PICK_KEY);
-    runCapture(sender.tab, 'region', msg);
+    // Un calque resté ouvert dans une autre fenêtre : le choix ne se perd pas sans rien dire.
+    if (running) reportFailure(sender.tab, new CaptureError(BUSY_MESSAGE));
+    else runCapture(sender.tab, 'region', msg);
   }
   return false;
 });
@@ -89,9 +99,14 @@ self.cancelCaptureForTest = () => {
 self.captureRunningForTest = () => running;
 
 async function startPick(tab, mode) {
-  if (running) throw new CaptureError('Une capture est déjà en cours.');
+  if (running) throw new CaptureError(BUSY_MESSAGE);
   await assertNotOwnPage(tab);
   await inTab(tab.id, pickerStart, [mode]);
+  // Une capture lancée pendant l'injection a déjà retiré le calque, avant qu'il n'arrive : il ne doit pas rester sur ses images.
+  if (running) {
+    await removePicker(tab.id);
+    throw new CaptureError(BUSY_MESSAGE);
+  }
   await chrome.storage.session.set({ [PICK_KEY]: { tabId: tab.id, mode, at: Date.now() } });
 }
 
@@ -242,11 +257,13 @@ async function captureRegion(tab, pick) {
   try {
     const info = await inTab(tab.id, pagePrepare, [{ ...PAGE_OPTIONS, region: true }]);
     if (cancelled) throw new CaptureCancelled();
-    if (info.gone) throw new CaptureError('Le bloc choisi a disparu de la page. Relance la capture et choisis-le de nouveau.');
+    if (info.gone) throw new CaptureError(BLOCK_GONE);
     if (info.empty) throw new CaptureError("Ce bloc n'est pas visible : il n'y a rien à capturer. Choisis-en un autre.");
     const { region, clip } = info;
     const offsets = [];
-    for (let offset = 0; ; offset += region.band) {
+    // Deux points de recouvrement : à une échelle non entière (zoom), l'arrondi laisserait sinon une ligne vide entre deux tranches.
+    const step = Math.max(1, region.band - 2);
+    for (let offset = 0; ; offset += step) {
       if (offset + region.band >= region.height) {
         offsets.push(Math.max(0, region.height - region.band));
         break;
@@ -260,15 +277,25 @@ async function captureRegion(tab, pick) {
     for (let i = 0; i < offsets.length; i++) {
       if (cancelled) throw new CaptureCancelled();
       const wanted = region.still ? region.start : region.top + offsets[i];
-      const actual = await inTab(tab.id, pageScrollTo, [wanted, true]);
+      let actual = await inTab(tab.id, pageScrollTo, [wanted, true]);
+      let live = await inTab(tab.id, pageRegionRect, []);
+      // Sa place sur l'écran : tout en bas de la page, le défilement s'arrête avant d'amener le bloc en haut.
+      const placed = () => (live ? live.top + region.skip + offsets[i] : clip.y + region.top + offsets[i] - actual);
+      const offScreen = () => !region.still && (placed() < clip.y - 1 || placed() + region.band > clip.y + clip.h + 1);
+      // Du contenu est apparu au-dessus du bloc : on le rattrape une fois.
+      if (live && !live.gone && offScreen()) {
+        actual = await inTab(tab.id, pageScrollTo, [actual + placed() - clip.y, true]);
+        live = await inTab(tab.id, pageRegionRect, []);
+      }
+      if (live?.gone) throw new CaptureError(BLOCK_GONE);
+      if (offScreen() || (live && live.height < region.skip + offsets[i] + region.band - 2)) throw new CaptureError(PAGE_MOVED);
+      const top = placed();
       const bmp = await createImageBitmap(await grab(tab));
       if (!scale) {
         scale = bmp.width / info.innerW;
         const x = Math.round(region.left * scale);
-        size = { x, w: Math.min(Math.round((region.left + region.width) * scale), bmp.width) - x, h: Math.round(region.band * scale) };
+        size = { x, w: Math.min(Math.round((region.left + region.width) * scale), bmp.width) - x, h: Math.min(Math.round(region.band * scale), bmp.height) };
       }
-      // Sa place sur l'écran : tout en bas de la page, le défilement s'arrête avant d'amener le bloc en haut.
-      const top = clip.y + region.top + offsets[i] - actual;
       const y = Math.max(0, Math.min(Math.round(top * scale), bmp.height - size.h));
       slices.push({ y: Math.round(offsets[i] * scale), blob: await cutBitmap(bmp, size.x, y, size.w, size.h) });
       progress(tab.id, i + 1, offsets.length, true);
@@ -290,6 +317,7 @@ async function captureRegion(tab, pick) {
       scroller: info.scroller,
       truncated: region.truncated,
       ...(region.partial ? { partial: region.partial } : {}),
+      ...(region.alsoWide ? { alsoWide: true } : {}),
     };
   } finally {
     await inTab(tab.id, pageRestore, []).catch(() => {});
@@ -410,7 +438,7 @@ async function explain(err) {
       expected: true,
     };
   }
-  return { message, expected: false };
+  return { message: `La capture a échoué (${message}). Relance-la ; si cela recommence, recharge la page.`, expected: false };
 }
 
 function progress(tabId, done, total, block = false) {

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Application dans une coque fixe</title>
+    <style>
+      html, body { margin: 0; background: #fff; }
+      #shell { position: fixed; inset: 0; }
+      #main { height: 100%; box-sizing: border-box; overflow: auto; background: #fff; }
+      #tall { height: 5000px; background: repeating-linear-gradient(#ffd84d 0 100px, #22aa44 100px 200px); border-top: 20px solid #00ccff; border-bottom: 20px solid #ff00aa; }
+    </style>
+  </head>
+  <body>
+    <div id="shell"><main id="main"><div id="tall"></div></main></div>
+    <script>
+      if (new URLSearchParams(location.search).has('border')) document.getElementById('main').style.border = '1px solid #000';
+    </script>
+  </body>
+</html>

@@ -49,6 +49,17 @@
       // Un bloc plus bas que l'écran, retiré par le site dès qu'on défile.
       if (params.has('vanish')) window.addEventListener('scroll', () => document.getElementById('below')?.remove());
       if (params.has('huge')) document.getElementById('inner').style.height = '101000px';
+      const css = (text) => document.head.insertAdjacentHTML('beforeend', `<style>${text}</style>`);
+      if (params.has('htmlscroll')) css('html { overflow-y: scroll; }');
+      if (params.has('bodyhidden')) css('html, body { height: 100%; } body { overflow-x: hidden; }');
+      if (params.has('snap')) css('html { scroll-snap-type: y mandatory; } #above, #outer, #below { scroll-snap-align: start; }');
+      if (params.has('snapsmall')) {
+        // De petites sections : un défilement aligné tomberait à côté de presque toutes les tranches.
+        css('html { scroll-snap-type: y mandatory; } .section { height: 600px; scroll-snap-align: start; }');
+        document.getElementById('inner').innerHTML = '<div class="section"></div>'.repeat(5);
+      }
+      if (params.has('childhead')) document.getElementById('outer').insertAdjacentHTML('afterbegin', '<div id="childhead" style="position: fixed; top: 0; left: 0; right: 0; height: 60px; background: #0000ff; z-index: 5"></div><div id="childback" style="position: fixed; inset: 0; z-index: -1"></div>');
+      if (params.has('tallwide')) add('<div id="tallwide" style="position: fixed; top: 100px; left: 0; width: 3000px; height: 3000px; background: #cc4400; z-index: 9"></div>');
       if (params.has('back')) {
         // Un fond fixe derrière la page, et un bloc transparent posé dessus.
         document.documentElement.style.background = 'transparent';
