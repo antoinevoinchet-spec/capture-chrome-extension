@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Capture",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Capture la page entière en haute résolution et la découpe automatiquement en plusieurs images nettes.",
   "permissions": ["activeTab", "scripting", "downloads", "storage", "contextMenus", "offscreen"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
@@ -33,6 +33,10 @@
     "capture-visible": {
       "suggested_key": { "default": "Alt+Shift+V" },
       "description": "Capturer la partie visible"
+    },
+    "capture-pick": {
+      "suggested_key": { "default": "Alt+Shift+Z" },
+      "description": "Capturer un bloc ou une zone"
     }
   }
 }

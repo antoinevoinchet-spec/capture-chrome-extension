@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Shadow DOM ouvert</title>
+    <style>html, body { margin: 0; background: #fff; } #top { height: 100px; background: #f1efea; }</style>
+  </head>
+  <body>
+    <div id="top"></div>
+    <div id="host"></div>
+    <script>
+      const root = document.getElementById('host').attachShadow({ mode: 'open' });
+      root.innerHTML = '<style>#card { width: 600px; height: 400px; padding: 50px; background: #22aa44; } #leaf { width: 200px; height: 100px; background: #ffd84d; }</style><div id="card"><div id="leaf"></div></div>';
+    </script>
+  </body>
+</html>

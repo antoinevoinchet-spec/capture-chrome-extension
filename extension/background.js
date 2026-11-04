@@ -1,10 +1,13 @@
 import { pagePrepare, pageScrollTo, pageRestore } from './capture/page.js';
+import { pickerStart, pickerStop } from './capture/picker.js';
 import { saveCapture, pruneCaptures } from './lib/db.js';
 import { setupWebImage } from './web-image/save-web-image.js';
 
 // Chrome refuse plus de 2 appels par seconde à captureVisibleTab.
 const CAPTURE_INTERVAL_MS = 550;
 const KEEP_CAPTURES = 15;
+// La sélection en cours, dans storage.session : le service worker peut s'endormir pendant qu'on choisit.
+const PICK_KEY = 'picking';
 const PAGE_OPTIONS = {
   preload: true,
   preloadStepMs: 120,
@@ -29,28 +32,78 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return false;
 });
 
-chrome.commands.onCommand.addListener((command, tab) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.type === 'pick-start') {
+    chrome.tabs.get(msg.tabId).then((tab) => startPick(tab, msg.mode)).then(
+      () => sendResponse({ ok: true }),
+      async (err) => sendResponse({ ok: false, error: (await explain(err)).message }),
+    );
+    return true;
+  }
+  if (msg?.type === 'pick-cancel') {
+    chrome.storage.session.remove(PICK_KEY);
+    return false;
+  }
+  // Vient du calque : le service worker a pu s'endormir pendant le choix, ce message le réveille.
+  if (msg?.type === 'pick-result' && sender.tab) {
+    chrome.storage.session.remove(PICK_KEY);
+    runCapture(sender.tab, 'region', msg);
+  }
+  return false;
+});
+
+function onCommand(command, tab) {
   if (command === 'capture-full') runCapture(tab, 'full');
   if (command === 'capture-visible') runCapture(tab, 'visible');
+  if (command === 'capture-pick') startPick(tab, 'block').catch((err) => reportFailure(tab, err));
+}
+chrome.commands.onCommand.addListener(onCommand);
+
+// Le calque ne reste pas sur un onglet qu'on a quitté.
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  const { [PICK_KEY]: picking } = await chrome.storage.session.get(PICK_KEY);
+  if (picking && picking.tabId !== tabId) await removePicker(picking.tabId);
 });
 
 setupWebImage();
 
 // Point d'entrée utilisé par les tests automatisés (ils ne peuvent pas cliquer sur l'icône).
 self.captureTab = (tabId, mode) => chrome.tabs.get(tabId).then((tab) => runCapture(tab, mode));
+self.startPick = (tabId, mode) => chrome.tabs.get(tabId).then((tab) => startPick(tab, mode));
+self.onCommandForTest = onCommand;
+self.explainForTest = (err) => explain(err);
 
-async function runCapture(tab, mode) {
+async function startPick(tab, mode) {
+  if (running) throw new CaptureError('Une capture est déjà en cours.');
+  await assertNotOwnPage(tab);
+  await inTab(tab.id, pickerStart, [mode]);
+  await chrome.storage.session.set({ [PICK_KEY]: { tabId: tab.id, mode, at: Date.now() } });
+}
+
+// Sur une page interdite ou un onglet fermé, il n'y a de toute façon aucun calque à retirer.
+async function removePicker(tabId) {
+  await chrome.storage.session.remove(PICK_KEY);
+  await inTab(tabId, pickerStop, []).catch(() => {});
+}
+
+async function assertNotOwnPage(tab) {
+  const ownPage = await chrome.runtime.getContexts({ contextTypes: ['TAB'], tabIds: [tab.id] });
+  if (ownPage.length) {
+    throw new CaptureError("C'est la page de résultats de l'extension : lance la capture depuis la page à capturer.");
+  }
+}
+
+async function runCapture(tab, mode, pick) {
   if (running) return null;
   running = true;
   badge(tab.id, '…', '#5f6368');
   setTitle(tab.id, 'Capture');
   chrome.storage.session.remove('lastError');
   try {
-    const ownPage = await chrome.runtime.getContexts({ contextTypes: ['TAB'], tabIds: [tab.id] });
-    if (ownPage.length) {
-      throw new CaptureError("C'est la page de résultats de l'extension : lance la capture depuis la page à capturer.");
-    }
-    const record = mode === 'visible' ? await captureVisible(tab) : await captureFullPage(tab);
+    // Quel que soit le lancement, le calque de sélection n'apparaît jamais sur l'image.
+    await removePicker(tab.id);
+    await assertNotOwnPage(tab);
+    const record = await (mode === 'region' ? captureRegion(tab, pick) : mode === 'visible' ? captureVisible(tab) : captureFullPage(tab));
     const id = await saveCapture(record);
     await pruneCaptures(KEEP_CAPTURES, await displayedCaptures());
     badge(tab.id, '');
@@ -64,17 +117,21 @@ async function runCapture(tab, mode) {
   } catch (err) {
     // Onglet fermé pendant la capture : c'est le choix de l'utilisateur, rien à signaler.
     if (!(await chrome.tabs.get(tab.id).catch(() => null))) return null;
-    const { message, expected } = await explain(err);
-    // Un refus prévisible (page interdite, onglet changé…) est expliqué, pas journalisé comme une panne.
-    if (!expected) console.error('Capture impossible :', err);
-    badge(tab.id, '!', '#d93025');
-    setTitle(tab.id, `Capture impossible : ${message}`);
-    notify({ type: 'capture-error', message });
-    await showErrorPopup(tab, message);
+    await reportFailure(tab, err);
     return null;
   } finally {
     running = false;
   }
+}
+
+async function reportFailure(tab, err) {
+  const { message, expected } = await explain(err);
+  // Un refus prévisible (page interdite, onglet changé…) est expliqué, pas journalisé comme une panne.
+  if (!expected) console.error('Capture impossible :', err);
+  badge(tab.id, '!', '#d93025');
+  setTitle(tab.id, `Capture impossible : ${message}`);
+  notify({ type: 'capture-error', message });
+  await showErrorPopup(tab, message);
 }
 
 // Captures affichées dans une page de résultats : le nettoyage ne les retire pas, on peut encore les annoter.
@@ -151,6 +208,34 @@ async function captureVisible(tab) {
     height,
     crop: { x: 0, y: 0, w: width, h: height },
     slices: [{ y: 0, blob }],
+    scroller: 'window',
+    truncated: false,
+  };
+}
+
+// Première version : le rectangle choisi, tel qu'à l'écran.
+async function captureRegion(tab, pick) {
+  const blob = await grab(tab);
+  const bmp = await createImageBitmap(blob);
+  const scale = bmp.width / pick.innerW;
+  const left = Math.max(0, Math.round(pick.rect.x * scale));
+  const top = Math.max(0, Math.round(pick.rect.y * scale));
+  const w = Math.max(1, Math.min(Math.round(pick.rect.w * scale), bmp.width - left));
+  const h = Math.max(1, Math.min(Math.round(pick.rect.h * scale), bmp.height - top));
+  const canvas = new OffscreenCanvas(w, h);
+  canvas.getContext('2d').drawImage(bmp, left, top, w, h, 0, 0, w, h);
+  bmp.close();
+  return {
+    mode: 'region',
+    origin: pick.mode === 'zone' ? 'zone' : 'bloc',
+    url: tab.url,
+    title: tab.title,
+    createdAt: Date.now(),
+    scale,
+    width: w,
+    height: h,
+    crop: { x: 0, y: 0, w, h },
+    slices: [{ y: 0, blob: await canvas.convertToBlob({ type: 'image/png' }) }],
     scroller: 'window',
     truncated: false,
   };

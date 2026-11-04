@@ -3,6 +3,8 @@ import { NOT_ALLOWED, PENDING_KEY, refusalMessage } from '../web-image/save-web-
 const els = {
   full: document.getElementById('full'),
   visible: document.getElementById('visible'),
+  pickBlock: document.getElementById('pick-block'),
+  pickZone: document.getElementById('pick-zone'),
   status: document.getElementById('status'),
   statusText: document.getElementById('status-text'),
   barFill: document.getElementById('bar-fill'),
@@ -15,7 +17,7 @@ const els = {
   version: document.getElementById('version'),
 };
 
-const COMMAND_LABELS = { 'capture-full': '« Page entière »', 'capture-visible': '« Partie visible »' };
+const COMMAND_LABELS = { 'capture-full': '« Page entière »', 'capture-visible': '« Partie visible »', 'capture-pick': '« Un bloc »' };
 
 els.version.textContent = `Version ${chrome.runtime.getManifest().version}`;
 
@@ -44,6 +46,8 @@ els.setShortcut.addEventListener('click', async () => {
 
 els.full.addEventListener('click', () => start('full'));
 els.visible.addEventListener('click', () => start('visible'));
+els.pickBlock.addEventListener('click', () => pick('block'));
+els.pickZone.addEventListener('click', () => pick('zone'));
 els.recent.addEventListener('click', async () => {
   await chrome.tabs.create({ url: chrome.runtime.getURL('viewer/viewer.html') });
   window.close();
@@ -90,9 +94,19 @@ async function start(mode) {
   if (!response?.ok) showError(response?.error ?? 'Capture impossible.');
 }
 
+// Le choix se fait sur la page : la fenêtre se ferme dès que le calque est posé.
+async function pick(mode) {
+  els.error.hidden = true;
+  const response = await chrome.runtime.sendMessage({ type: 'pick-start', mode, tabId: tab.id });
+  if (response?.ok) window.close();
+  else showError(response?.error ?? 'Capture impossible.');
+}
+
 function setBusy(busy) {
   els.full.disabled = busy;
   els.visible.disabled = busy;
+  els.pickBlock.disabled = busy;
+  els.pickZone.disabled = busy;
   els.status.hidden = !busy;
 }
 
