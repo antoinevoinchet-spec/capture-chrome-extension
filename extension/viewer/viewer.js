@@ -172,8 +172,8 @@ async function openCapture(id) {
     history.replaceState(null, '', `?id=${id}`);
 
     const host = hostOf(record.url);
-    document.title = `${record.title || host || 'Capture'} | Capture`;
-    els.title.textContent = record.title || host || 'Capture sans titre';
+    document.title = `${titled(record, record.title || host || 'Capture')} | Capture`;
+    els.title.textContent = titled(record, record.title || host || 'Capture sans titre');
     els.meta.replaceChildren(
       text(host || 'Page locale'),
       text(dates.format(record.createdAt)),
@@ -794,6 +794,12 @@ async function saveBlob(blob, filename) {
   }
 }
 
+// Un bloc ou une zone le dit dans son titre, ici et dans l'historique.
+function titled(capture, name) {
+  const origin = { bloc: 'Bloc', zone: 'Zone' }[capture.origin];
+  return origin ? `${origin} : ${name}` : name;
+}
+
 function baseName() {
   const host = (hostOf(record.url) || 'capture').replace(/[^a-z0-9.-]+/gi, '-');
   const d = new Date(record.createdAt);
@@ -827,7 +833,7 @@ function historyEntry(capture) {
   thumb.className = 'history-thumb';
   thumb.setAttribute('aria-hidden', 'true');
   queueThumb(thumb, capture);
-  const title = text(capture.title || hostOf(capture.url) || 'Sans titre', 'history-title');
+  const title = text(titled(capture, capture.title || hostOf(capture.url) || 'Sans titre'), 'history-title');
   title.id = `history-title-${capture.id}`;
   const meta = text('', 'history-meta');
   meta.dataset.host = hostOf(capture.url) || 'Page locale';

@@ -11,6 +11,8 @@ export async function pagePrepare(options) {
       setTimeout(resolve, 250);
     });
   const root = document.scrollingElement || document.documentElement;
+  // Le bloc choisi au calque, gardé par celui-ci avant que l'état ne soit remplacé.
+  const pick = options.region ? (window.__captureState?.pickEl ?? null) : null;
 
   const state = {
     startX: window.scrollX,
@@ -36,6 +38,34 @@ export async function pagePrepare(options) {
   state.styleEl = style;
   await frame();
 
+  if (options.region && !pick?.isConnected) return { gone: true };
+  const parentOf = (el) => el.parentElement || el.getRootNode().host || null;
+  const chainOf = (el) => {
+    const chain = [];
+    for (let up = el; up; up = parentOf(up)) chain.push(up);
+    return chain;
+  };
+  const isScroller = (el) => el.scrollHeight > el.clientHeight + 8 && /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY);
+  const clientBox = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left + el.clientLeft, top: r.top + el.clientTop, right: r.left + el.clientLeft + el.clientWidth, bottom: r.top + el.clientTop + el.clientHeight };
+  };
+  // Le bloc tient en hauteur à l'écran, sans qu'une zone qui défile en cache un morceau : aucun défilement, ni avant ni pendant.
+  const fitsOnScreen = (box) =>
+    box.top >= 0 &&
+    box.bottom <= window.innerHeight &&
+    chainOf(pick)
+      .slice(1)
+      .every((el) => !isScroller(el) || (box.top >= clientBox(el).top - 1 && box.bottom <= clientBox(el).bottom + 1));
+  const fits = pick ? fitsOnScreen(pick.getBoundingClientRect()) : false;
+  // Un bloc qui défile lui-même peut être la zone principale, à assembler : on ne le sait qu'après l'avoir cherchée.
+  let still = fits && !isScroller(pick);
+  let partial = null;
+  if (pick && !still && chainOf(pick).some((el) => getComputedStyle(el).position === 'fixed')) {
+    still = true;
+    partial = 'fixed';
+  }
+
   const windowScrolls = () => {
     if (root.scrollHeight <= window.innerHeight + 8) return false;
     const y = window.scrollY;
@@ -48,7 +78,7 @@ export async function pagePrepare(options) {
   // Si la fenêtre ne défile pas, le contenu défile dans un bloc (messagerie web, éditeur de notes, chat en ligne…, ou le
   // <body> lui-même) : on prend le plus grand bloc défilant visible.
   let target = null;
-  if (!windowScrolls()) {
+  if (!still && !windowScrolls()) {
     let bestArea = 0;
     for (const el of document.querySelectorAll('body, body *')) {
       if (el.scrollHeight <= el.clientHeight + 8) continue;
@@ -62,6 +92,17 @@ export async function pagePrepare(options) {
       }
     }
     if (bestArea < window.innerWidth * window.innerHeight * 0.15) target = null;
+  }
+  // Une autre zone qui défile à l'intérieur de la page ne s'assemble pas : on prend ce qu'elle montre.
+  const parentScroller = pick && !still ? chainOf(pick).slice(1).find((el) => isScroller(el) && (target || (el !== document.body && el !== document.documentElement))) : null;
+  if (pick && !still && (target ? pick !== target && parentScroller !== target : parentScroller)) {
+    still = true;
+    partial = 'scroller';
+    target = null;
+  }
+  if (pick && !still && fits && pick !== target) {
+    still = true;
+    target = null;
   }
   state.target = target;
 
@@ -86,7 +127,7 @@ export async function pagePrepare(options) {
   }
 
   // Défilement préalable : déclenche le chargement des images « lazy » et des animations d'apparition.
-  if (options.preload) {
+  if (options.preload && !still) {
     const deadline = Date.now() + options.preloadMaxMs;
     for (let y = 0; y < scrollHeight() && Date.now() < deadline; y += clip.h) {
       scrollToY(y);
@@ -95,9 +136,12 @@ export async function pagePrepare(options) {
     scrollToY(scrollHeight());
     await sleep(options.preloadStepMs);
   }
-  scrollToY(0);
-  await sleep(300);
-  await frame();
+  if (!still) {
+    scrollToY(0);
+    await sleep(300);
+    await frame();
+  }
+  if (options.region && !pick.isConnected) return { gone: true };
 
   // Hauteur réellement atteignable : si le bloc dépasse de l'écran, son bas ne s'affiche jamais en entier.
   const fullHeight = scrollHeight() - viewportHeight + clip.h;
@@ -135,6 +179,68 @@ export async function pagePrepare(options) {
   // Le bloc défilant et ses parents sont épargnés.
   const keep = state.keep;
   for (let el = target; el; el = el.parentElement) keep.add(el);
+
+  // Le rectangle du bloc, relu maintenant que la page est préparée. `top` est mesuré depuis le début de ce qui défile.
+  let region = null;
+  if (pick) {
+    for (const el of chainOf(pick)) keep.add(el);
+    for (const el of pick.querySelectorAll('*')) keep.add(el);
+    // Un bloc collant suit le défilement comme le reste de la page : on ne le force que s'il faut défiler.
+    if (!still) {
+      for (const el of chainOf(pick)) if (getComputedStyle(el).position === 'sticky') state.unstick(el);
+      await frame();
+    }
+    const box = pick.getBoundingClientRect();
+    let view = still ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight } : { left: clip.x, top: clip.y, right: clip.x + clip.w, bottom: clip.y + clip.h };
+    if (still) {
+      for (const el of chainOf(pick).slice(1)) {
+        if (!isScroller(el)) continue;
+        const outer = clientBox(el);
+        view = { left: Math.max(view.left, outer.left), top: Math.max(view.top, outer.top), right: Math.min(view.right, outer.right), bottom: Math.min(view.bottom, outer.bottom) };
+      }
+    }
+    const left = Math.max(box.left, view.left);
+    const right = Math.min(box.right, view.right);
+    let top;
+    let height;
+    if (still) {
+      top = Math.max(box.top, view.top);
+      height = Math.min(box.bottom, view.bottom) - top;
+      top -= clip.y;
+      top += target ? target.scrollTop : window.scrollY;
+    } else if (pick === target) {
+      top = 0;
+      height = target.scrollHeight;
+    } else {
+      const start = target ? clientBox(target).top - target.scrollTop : -window.scrollY;
+      top = Math.max(0, box.top - start);
+      height = Math.min(box.bottom - start, scrollHeight()) - top;
+    }
+    if (right - left < 1 || height < 1) return { empty: true };
+    if (box.width > right - left + 1) partial ??= 'wide';
+    if (pick !== target && pick.scrollHeight > pick.clientHeight + 8 && isScroller(pick)) partial ??= 'scroller';
+    const reach = Math.min(height, options.maxHeight);
+    region = { left, width: right - left, top, height: reach, band: Math.min(clip.h, reach), still, start: target ? target.scrollTop : window.scrollY, partial, truncated: height > options.maxHeight };
+    // Les éléments fixes se jugent à la place où le bloc sera capturé.
+    if (!still) {
+      scrollToY(top);
+      await frame();
+    }
+    state.regionView = still ? { left, right, top: Math.max(box.top, view.top), bottom: Math.min(box.bottom, view.bottom) } : { left, right, top: clip.y, bottom: clip.y + clip.h };
+  }
+  // Pour un bloc : un élément fixe qui passe devant lui est masqué dès la première tranche, un fond fixe derrière lui reste.
+  const coversRegion = (el) => {
+    const r = el.getBoundingClientRect();
+    const v = state.regionView;
+    const left = Math.max(r.left, v.left);
+    const right = Math.min(r.right, v.right);
+    const top = Math.max(r.top, v.top);
+    const bottom = Math.min(r.bottom, v.bottom);
+    if (right <= left || bottom <= top) return false;
+    const stack = document.elementsFromPoint((left + right) / 2, (top + bottom) / 2);
+    const own = stack.findIndex((hit) => el.contains(hit));
+    return own < 0 || own < stack.findIndex((hit) => keep.has(hit));
+  };
   const hasSurface = (el) => {
     const { backgroundImage, backgroundColor } = getComputedStyle(el);
     return backgroundImage !== 'none' || !/^(transparent|rgba\(.*,\s*0\))$/.test(backgroundColor);
@@ -158,9 +264,17 @@ export async function pagePrepare(options) {
   const stuck = [];
   const low = [];
   for (const el of document.querySelectorAll('body *')) {
-    if (keep.has(el)) continue;
+    // Un enfant collant du bloc, si on défile, reprend sa place comme dans une page entière : sinon il se répéterait sur chaque tranche.
+    const stickyChild = pick && !still && el !== pick && pick.contains(el);
+    if (keep.has(el) && !stickyChild) continue;
     const position = getComputedStyle(el).position;
     if (position !== 'fixed' && position !== 'sticky') continue;
+    if (pick && position === 'fixed') {
+      if (keep.has(el)) continue;
+      if (coversRegion(el)) state.bottomEls.push(el);
+      else keep.add(el);
+      continue;
+    }
     const box = el.getBoundingClientRect();
     let follows = false;
     for (let up = el.parentElement; up && !follows; up = up.parentElement) follows = surfaces.has(up) && within(surfaces.get(up), box);
@@ -195,6 +309,7 @@ export async function pagePrepare(options) {
     scroller: target ? 'element' : 'window',
     title: document.title,
     url: location.href,
+    region,
   };
 }
 

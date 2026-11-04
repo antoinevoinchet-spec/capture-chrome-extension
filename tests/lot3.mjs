@@ -1,6 +1,6 @@
 // Tests du lot 3 : capturer un bloc ou une zone. Le calque de sélection, le rectangle choisi, les cas limites.
 // Même Chromium et même extension que les autres suites (écran ×2).
-// Usage : node lot3.mjs <dossier de sortie> [calque|region|limites] [motif]
+// Usage : node lot3.mjs <dossier de sortie> [calque|region|barres|limites] [motif]
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -463,6 +463,699 @@ async function groupCalque(context, sw, base) {
   });
 }
 
+// --- Le rectangle choisi ---
+
+// Choisit un élément précis, puis valide à la touche Entrée. Le parcours à la souris est vérifié dans le groupe `calque`.
+async function captureBlock(context, sw, page, tabId, selector) {
+  await startPick(sw, tabId, 'block');
+  await sw.evaluate(
+    async ({ tabId, selector }) => {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (selector) => {
+          window.__capturePicker.current = document.querySelector(selector);
+        },
+        args: [selector],
+      });
+    },
+    { tabId, selector },
+  );
+  const opened = nextViewer(context);
+  await page.keyboard.press('Enter');
+  const viewer = await opened;
+  return { viewer, record: await viewerRecord(viewer) };
+}
+
+// Comme `captureBlock`, avec un rectangle tracé à la souris.
+async function captureZone(context, sw, page, tabId, { x, y, w, h }) {
+  await startPick(sw, tabId, 'zone');
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + w, y + h, { steps: 3 });
+  const opened = nextViewer(context);
+  await page.mouse.up();
+  const viewer = await opened;
+  return { viewer, record: await viewerRecord(viewer) };
+}
+
+// Ce que contient l'image : couleurs le long de la colonne du milieu (suites [début, fin, couleur]), et nombre de pixels de chaque couleur cherchée.
+function readImage(viewer, seek = {}) {
+  return viewer.evaluate(
+    async (seek) => {
+      const { getCapture } = await import(chrome.runtime.getURL('lib/db.js'));
+      const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+      const record = await getCapture(new URLSearchParams(location.search).get('id'));
+      const stitcher = new Stitcher(record);
+      const counts = Object.fromEntries(Object.keys(seek).map((name) => [name, 0]));
+      const runs = [];
+      const edges = { left: new Set(), right: new Set() };
+      const hit = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) <= 12;
+      const BAND = 2000;
+      for (let top = 0; top < record.height; top += BAND) {
+        const h = Math.min(BAND, record.height - top);
+        const ctx = new OffscreenCanvas(record.width, h).getContext('2d', { willReadFrequently: true });
+        await stitcher.enqueue(() => stitcher.draw(ctx, top, h));
+        const { data } = ctx.getImageData(0, 0, record.width, h);
+        const middle = record.width >> 1;
+        for (let row = 0; row < h; row++) {
+          for (let col = 0; col < record.width; col++) {
+            const i = (row * record.width + col) * 4;
+            const px = [data[i], data[i + 1], data[i + 2]];
+            if (col === middle) {
+              const last = runs.at(-1);
+              if (last && hit(last[2], px)) last[1] = top + row + 1;
+              else runs.push([top + row, top + row + 1, px]);
+            }
+            if (col === 0) edges.left.add(px.join());
+            if (col === record.width - 1) edges.right.add(px.join());
+            for (const [name, rgb] of Object.entries(seek)) if (hit(rgb, px)) counts[name]++;
+          }
+        }
+      }
+      stitcher.dispose();
+      return { width: record.width, height: record.height, runs, counts, left: [...edges.left], right: [...edges.right] };
+    },
+    seek,
+  );
+}
+
+// Compare l'image à ce que Chrome dessine lui-même au même endroit de la page, sans recollage. `rect` en points, dans le document.
+async function compareToPage(context, page, viewer, rect) {
+  await page.bringToFront();
+  const session = await context.newCDPSession(page);
+  let wrong = 0;
+  let box = null;
+  let size = '';
+  const TILE = 1500;
+  for (let y = 0; y < rect.h; y += TILE) {
+    const clip = { x: rect.x, y: rect.y + y, width: rect.w, height: Math.min(TILE, rect.h - y), scale: 1 };
+    const { data } = await session.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, fromSurface: true, clip });
+    await viewer.bringToFront();
+    const one = await viewer.evaluate(
+      async ({ data, y }) => {
+        const { getCapture } = await import(chrome.runtime.getURL('lib/db.js'));
+        const { Stitcher } = await import(chrome.runtime.getURL('viewer/stitcher.js'));
+        const record = await getCapture(new URLSearchParams(location.search).get('id'));
+        const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], { type: 'image/png' }));
+        const { width, height } = bitmap;
+        const stitcher = new Stitcher(record);
+        const top = y * record.scale;
+        const mine = new OffscreenCanvas(width, height).getContext('2d', { willReadFrequently: true });
+        await stitcher.enqueue(() => stitcher.draw(mine, top, height));
+        const theirs = new OffscreenCanvas(width, height).getContext('2d', { willReadFrequently: true });
+        theirs.drawImage(bitmap, 0, 0);
+        const a = mine.getImageData(0, 0, width, height).data;
+        const b = theirs.getImageData(0, 0, width, height).data;
+        let wrong = 0;
+        let box = null;
+        for (let row = 0; row < height; row++) {
+          for (let col = 0; col < width; col++) {
+            const i = (row * width + col) * 4;
+            if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) <= 24) continue;
+            wrong++;
+            box = box ? [Math.min(box[0], col), Math.min(box[1], top + row), Math.max(box[2], col), Math.max(box[3], top + row)] : [col, top + row, col, top + row];
+          }
+        }
+        stitcher.dispose();
+        bitmap.close();
+        return { wrong, box, size: `${record.width}×${record.height}, référence ${width} de large` };
+      },
+      { data, y },
+    );
+    await page.bringToFront();
+    wrong += one.wrong;
+    size = one.size;
+    if (one.box) box = box ? [Math.min(box[0], one.box[0]), Math.min(box[1], one.box[1]), Math.max(box[2], one.box[2]), Math.max(box[3], one.box[3])] : one.box;
+  }
+  await session.detach();
+  return { wrong, box, size };
+}
+
+const docRect = (page, selector) =>
+  page.evaluate((selector) => {
+    const { x, y, width, height } = document.querySelector(selector).getBoundingClientRect();
+    return { x: x + scrollX, y: y + scrollY, w: width, h: height };
+  }, selector);
+
+// Une page ouverte, une capture de bloc, et tout se referme même si le contrôle lâche.
+async function onBlock(context, sw, url, selector, body, { before } = {}) {
+  const { page, tabId } = await openTab(context, sw, url);
+  let viewer;
+  try {
+    await before?.(page, tabId);
+    const shot = await captureBlock(context, sw, page, tabId, selector);
+    viewer = shot.viewer;
+    return await body({ page, tabId, viewer, record: shot.record });
+  } finally {
+    await viewer?.close();
+    await page.close();
+  }
+}
+
+const countScrolls = (page) =>
+  page.evaluate(() => {
+    window.__scrolls = 0;
+    window.addEventListener('scroll', () => window.__scrolls++, { capture: true, passive: true });
+  });
+
+const CALQUE = { edge: [244, 197, 66] };
+const CYAN = [0, 204, 255];
+const MAGENTA = [255, 0, 170];
+const BLUE = [0, 0, 255];
+const PURPLE = [170, 0, 255];
+const YELLOW = [255, 216, 77];
+const GREEN = [34, 170, 68];
+const OUTER = [223, 231, 226];
+const ABOVE = [241, 239, 234];
+
+async function groupRegion(context, sw, base) {
+  console.log('\n— Le rectangle choisi');
+  const tall = `${base}/tall-block.html`;
+
+  await test('region : dimensions égales au rectangle × échelle', () =>
+    onBlock(context, sw, tall, '#inner', async ({ page, record }) => {
+      const rect = await docRect(page, '#inner');
+      return { ok: record.width === rect.w * 2 && record.height === rect.h * 2 && record.scale === 2, detail: `${record.width}×${record.height}, attendu ${rect.w * 2}×${rect.h * 2}` };
+    }));
+
+  await test('region : pixels égaux à la page entière rognée', () =>
+    onBlock(context, sw, tall, '#outer', async ({ page, viewer }) => {
+      const { wrong, box, size } = await compareToPage(context, page, viewer, await docRect(page, '#outer'));
+      return { ok: wrong === 0, detail: `${size}, différents ${wrong}${box ? ` dans ${JSON.stringify(box)}` : ''}` };
+    }));
+
+  await test('region : aucune couleur du calque', () =>
+    onBlock(context, sw, tall, '#inner', async ({ viewer }) => {
+      const { counts } = await readImage(viewer, CALQUE);
+      return { ok: counts.edge === 0, detail: `${counts.edge} pixels` };
+    }));
+
+  await test('region : nom et titre', () =>
+    onBlock(context, sw, tall, '#leaf', async ({ viewer, record }) => {
+      await viewer.evaluate(() => {
+        window.__names = [];
+        Object.defineProperty(chrome.downloads, 'download', {
+          value: async ({ filename }) => {
+            window.__names.push(filename);
+            return 1;
+          },
+          configurable: true,
+        });
+      });
+      const seen = {
+        title: await viewer.locator('#title').innerText(),
+        meta: await viewer.locator('#meta').innerText(),
+        tab: await viewer.title(),
+        row: await viewer.locator('.history-title').first().innerText(),
+        url: record.url,
+      };
+      const ok = /^Bloc : Bloc très haut$/.test(seen.title) && /127\.0\.0\.1/.test(seen.meta) && /^Bloc : /.test(seen.tab) && /^Bloc : /.test(seen.row) && /tall-block\.html/.test(seen.url) && record.origin === 'bloc';
+      return { ok, detail: JSON.stringify(seen) };
+    }));
+
+  await test('region : le rectangle est remesuré après une image paresseuse au-dessus', () =>
+    onBlock(context, sw, `${tall}?lazy`, '#inner', async ({ page, viewer, record }) => {
+      const grown = await page.evaluate(() => document.getElementById('lazy').offsetHeight);
+      const { wrong, box, size } = await compareToPage(context, page, viewer, await docRect(page, '#inner'));
+      return { ok: grown === 300 && wrong === 0 && record.height === 3040 * 2, detail: `contenu paresseux ${grown}, ${size}, différents ${wrong}${box ? ` dans ${JSON.stringify(box)}` : ''}` };
+    }));
+
+  await test('region : modale', () =>
+    onBlock(context, sw, `${tall}?modal`, '#modal', async ({ viewer, record }) => {
+      const { counts } = await readImage(viewer, { modal: [204, 68, 0] });
+      return { ok: record.width === 1000 && record.height === 600 && counts.modal === 600000, detail: `${record.width}×${record.height}, ${counts.modal} pixels de la modale` };
+    }));
+
+  await test('region : en-tête fixe choisi', () =>
+    onBlock(context, sw, tall, '#head', async ({ viewer, record }) => {
+      const { counts } = await readImage(viewer, { blue: BLUE });
+      return { ok: record.height === 120 && counts.blue === record.width * 120, detail: `${record.width}×${record.height}, ${counts.blue} pixels bleus` };
+    }));
+
+  await test('region : bloc collant, resté collé et sans l’en-tête fixe', () =>
+    onBlock(
+      context,
+      sw,
+      tall,
+      '#sticky',
+      async ({ page, viewer, record }) => {
+        const { counts } = await readImage(viewer, { purple: PURPLE, blue: BLUE });
+        const y = await page.evaluate(() => scrollY);
+        return { ok: record.height === 100 && counts.purple === record.width * 100 && counts.blue === 0 && y === 1000, detail: `${record.width}×${record.height}, violet ${counts.purple}, bleu ${counts.blue}, défilement ${y}` };
+      },
+      { before: (page) => page.evaluate(() => window.scrollTo(0, 1000)) },
+    ));
+
+  await test('region : en-tête de page non répété sur un bloc de 3 000 px', () =>
+    onBlock(context, sw, tall, '#inner', async ({ viewer }) => {
+      const { runs, counts } = await readImage(viewer, { blue: BLUE, purple: PURPLE });
+      const colors = runs.map(([, , rgb]) => rgb.join());
+      const alternates = colors.slice(1, -1).every((color, index) => color === (index % 2 ? GREEN : YELLOW).join());
+      const ok = counts.blue === 0 && counts.purple === 0 && colors[0] === CYAN.join() && colors.at(-1) === MAGENTA.join() && alternates && runs.length === 32 && runs.slice(1, -1).every(([a, b]) => b - a === 200);
+      return { ok, detail: `bleu ${counts.blue}, violet ${counts.purple}, ${runs.length} bandes` };
+    }));
+
+  await test('region : un en-tête fixe ne couvre pas le haut d’un bloc à l’écran', () =>
+    onBlock(context, sw, tall, '#above', async ({ viewer, record }) => {
+      const { counts } = await readImage(viewer, { blue: BLUE, above: ABOVE });
+      return { ok: counts.blue === 0 && counts.above === record.width * record.height, detail: `bleu ${counts.blue}, ${counts.above} sur ${record.width * record.height}` };
+    }));
+
+  await test('region : un fond fixe derrière le bloc reste visible', () =>
+    onBlock(context, sw, `${tall}?back`, '#clear', async ({ viewer, record }) => {
+      const { counts } = await readImage(viewer, { back: [160, 208, 255] });
+      return { ok: record.width === 600 && counts.back === record.width * record.height, detail: `${counts.back} sur ${record.width * record.height}` };
+    }));
+
+  await test('region : bloc dans la zone défilante principale', () =>
+    onBlock(context, sw, `${base}/app.html`, '#scroller', async ({ page, viewer, record }) => {
+      const { full, wide } = await page.evaluate(() => {
+        const el = document.getElementById('scroller');
+        return { full: el.scrollHeight, wide: el.clientWidth };
+      });
+      const { runs, counts, left: edge } = await readImage(viewer, { magenta: MAGENTA });
+      const left = await page.evaluate(() => document.getElementById('scroller').scrollTop);
+      // Le titre collant apparaît une seule fois, en haut. Le bord de l'image montrerait la barre fixe (#333) ou le panneau (#e6e6e6).
+      const once = counts.magenta <= record.width * 100 && runs[0][2].join() === MAGENTA.join() && runs[0][1] === 100;
+      const clean = !edge.includes('51,51,51') && !edge.includes('230,230,230');
+      return { ok: record.height === full * 2 && record.width === wide * 2 && once && clean && left === 0, detail: `${record.width}×${record.height}, attendu ${wide * 2}×${full * 2}, magenta ${counts.magenta}, bord ${edge.join(' ')}` };
+    }));
+
+  await test('region : petit bloc hors de l’écran, dans la zone défilante principale', () =>
+    onBlock(context, sw, `${base}/app.html`, '.msg:nth-child(120)', async ({ page, viewer, record }) => {
+      const rect = await rectOf(page, '.msg:nth-child(120)');
+      const text = await viewer.evaluate(() => document.querySelector('#title').textContent);
+      const { counts } = await readImage(viewer, { magenta: MAGENTA });
+      return { ok: record.width === rect.w * 2 && record.height === Math.round(rect.h * 2) && counts.magenta === 0, detail: `${record.width}×${record.height}, attendu ${rect.w * 2}×${rect.h * 2}, ${text}` };
+    }));
+
+  await test('region : zone tracée', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    let viewer;
+    try {
+      const rect = { x: 200, y: 500, w: 400, h: 300 };
+      const shot = await captureZone(context, sw, page, tabId, rect);
+      viewer = shot.viewer;
+      const { record } = shot;
+      const { wrong, box, size } = await compareToPage(context, page, viewer, rect);
+      const title = await viewer.locator('#title').innerText();
+      return { ok: record.width === 800 && record.height === 600 && wrong === 0 && record.origin === 'zone' && /^Zone : /.test(title), detail: `${size}, différents ${wrong}${box ? ` dans ${JSON.stringify(box)}` : ''}, ${title}` };
+    } finally {
+      await viewer?.close();
+      await page.close();
+    }
+  });
+
+  await test('region : zone tracée, les éléments fixes restent tels qu’à l’écran', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    let viewer;
+    try {
+      const shot = await captureZone(context, sw, page, tabId, { x: 200, y: 20, w: 400, h: 100 });
+      viewer = shot.viewer;
+      const { counts } = await readImage(viewer, { ...CALQUE, blue: BLUE });
+      return { ok: counts.blue === 800 * 80 && counts.edge === 0, detail: `bleu ${counts.blue}, calque ${counts.edge}` };
+    } finally {
+      await viewer?.close();
+      await page.close();
+    }
+  });
+
+  await test('region : bloc entièrement à l’écran, aucun défilement préalable', () =>
+    onBlock(
+      context,
+      sw,
+      tall,
+      '#leaf',
+      async ({ page, viewer, record }) => {
+        const scrolls = await page.evaluate(() => window.__scrolls);
+        const y = await page.evaluate(() => scrollY);
+        const { counts } = await readImage(viewer, { white: [255, 255, 255] });
+        return { ok: scrolls === 0 && y === 300 && record.width === 600 && record.height === 160 && counts.white === 600 * 160, detail: `${scrolls} défilements, position ${y}, ${record.width}×${record.height}, blanc ${counts.white}` };
+      },
+      {
+        before: async (page) => {
+          await page.evaluate(() => window.scrollTo(0, 300));
+          // L'événement du défilement ci-dessus part à l'image suivante : il ne doit pas être compté.
+          await page.waitForTimeout(200);
+          await countScrolls(page);
+        },
+      },
+    ));
+
+  await test('region : bloc fixe qui tient à l’écran, capturé sans défilement', () =>
+    onBlock(
+      context,
+      sw,
+      `${tall}?modal`,
+      '#modal',
+      async ({ page, record }) => {
+        const scrolls = await page.evaluate(() => window.__scrolls);
+        const y = await page.evaluate(() => scrollY);
+        return { ok: scrolls === 0 && y === 500 && record.height === 600, detail: `${scrolls} défilements, position ${y}` };
+      },
+      {
+        before: async (page) => {
+          await page.evaluate(() => window.scrollTo(0, 500));
+          await page.waitForTimeout(200);
+          await countScrolls(page);
+        },
+      },
+    ));
+
+  await test('region : le style de la page est remis en état', () =>
+    onBlock(context, sw, tall, '#inner', async ({ page }) => {
+      const after = await page.evaluate(() => ({
+        y: scrollY,
+        leftover: [...document.querySelectorAll('style')].some((s) => s.textContent.includes('scrollbar-width: none')),
+        head: getComputedStyle(document.getElementById('head')).opacity,
+        sticky: getComputedStyle(document.getElementById('sticky')).position,
+      }));
+      return { ok: after.y === 0 && !after.leftover && after.head === '1' && after.sticky === 'sticky', detail: JSON.stringify(after) };
+    }));
+
+  await test('region : zoom du navigateur à 125 %', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    let viewer;
+    try {
+      await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1.25), tabId);
+      await page.waitForFunction(() => window.devicePixelRatio === 2.5);
+      const rect = await docRect(page, '#inner');
+      const shot = await captureBlock(context, sw, page, tabId, '#inner');
+      viewer = shot.viewer;
+      const { record } = shot;
+      const { runs, counts } = await readImage(viewer, { blue: BLUE });
+      const wanted = { w: rect.w * 2.5, h: rect.h * 2.5 };
+      const bands = runs.filter(([a, b]) => b - a > 3);
+      const even = bands.slice(1, -1).every(([a, b]) => Math.abs(b - a - 250) <= 2);
+      const ok = Math.abs(record.width - wanted.w) <= 2 && Math.abs(record.height - wanted.h) <= 2 && record.scale === 2.5 && bands[0][2].join() === CYAN.join() && bands.at(-1)[2].join() === MAGENTA.join() && bands.length === 32 && even && counts.blue === 0;
+      return { ok, detail: `${record.width}×${record.height}, attendu ${wanted.w}×${wanted.h}, échelle ${record.scale}, ${bands.length} bandes, bleu ${counts.blue}` };
+    } finally {
+      await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1), tabId).catch(() => {});
+      await viewer?.close();
+      await page.close();
+    }
+  });
+
+  await test('region : zone au zoom du navigateur à 125 %', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    let viewer;
+    try {
+      await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1.25), tabId);
+      await page.waitForFunction(() => window.devicePixelRatio === 2.5);
+      // Le tracé est lu directement : un zoom qui décalerait les coordonnées se verrait sur les dimensions.
+      await startPick(sw, tabId, 'zone');
+      const opened = nextViewer(context);
+      await sw.evaluate(
+        async (tabId) => {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+              const fire = (type, x, y) => window.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true }));
+              fire('mousedown', 100, 100);
+              fire('mousemove', 300, 240);
+              fire('mouseup', 300, 240);
+            },
+          });
+        },
+        tabId,
+      );
+      viewer = await opened;
+      const record = await viewerRecord(viewer);
+      return { ok: Math.abs(record.width - 500) <= 2 && Math.abs(record.height - 350) <= 2, detail: `${record.width}×${record.height}, attendu 500×350` };
+    } finally {
+      await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1), tabId).catch(() => {});
+      await viewer?.close();
+      await page.close();
+    }
+  });
+}
+
+// Playwright masque d'office les barres de défilement : ce groupe garde un navigateur qui les montre, et une barre qui prend de la place.
+async function groupBarres(context, sw, base) {
+  console.log('\n— Barres de défilement classiques');
+  await test('region : barres de défilement classiques', () =>
+    onBlock(context, sw, `${base}/tall-block.html?bars`, '#outer', async ({ page, viewer }) => {
+      const withBar = await rectOf(page, '#outer');
+      const image = await readImage(viewer);
+      // Sans la barre, masquée pendant la capture, la page reprend toute sa largeur : le bloc aussi. Les deux bords sont ceux du bloc, sans bande de page ni de barre.
+      const clean = image.left.join() === OUTER.join() && image.right.join() === OUTER.join();
+      const inner = await page.evaluate(() => [innerWidth, document.documentElement.clientWidth]);
+      return { ok: inner[0] - inner[1] === 15 && clean && image.width === (withBar.w + 15) * 2, detail: `barre de ${inner[0] - inner[1]}, bloc ${withBar.w} avec barre, image de ${image.width}, bords ${image.left.join(' ')} / ${image.right.join(' ')}` };
+    }));
+}
+
+// --- Cas limites et annulation ---
+
+// Le titre de l'icône après un refus, et l'absence de page de résultats.
+async function refused(context, sw, tabId, startIt) {
+  await startIt();
+  // Le refus est prêt dès que le titre le dit.
+  let title = '';
+  for (let i = 0; i < 150 && !/Capture impossible/.test(title); i++) {
+    await sleep(200);
+    title = await sw.evaluate((tabId) => chrome.action.getTitle({ tabId }).catch(() => ''), tabId);
+  }
+  const stored = await sw.evaluate(async () => (await chrome.storage.session.get('lastError')).lastError?.message ?? '');
+  const viewers = context.pages().filter((p) => p.url().includes('/viewer/viewer.html')).length;
+  for (const p of context.pages()) if (p.url().includes('/popup/popup.html')) await p.close();
+  return { title, stored, viewers };
+}
+
+// Choisit l'élément et valide, sans attendre de page de résultats.
+async function chooseAndValidate(sw, page, tabId, selector) {
+  await startPick(sw, tabId, 'block');
+  await sw.evaluate(
+    async ({ tabId, selector }) => {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (selector) => {
+          window.__capturePicker.current = document.querySelector(selector);
+        },
+        args: [selector],
+      });
+    },
+    { tabId, selector },
+  );
+  await page.keyboard.press('Enter');
+}
+
+async function groupLimites(context, sw, base) {
+  console.log('\n— Cas limites');
+  const tall = `${base}/tall-block.html`;
+  const notice = async (viewer) => {
+    const el = viewer.locator('#partial-notice');
+    return (await el.isVisible()) ? (await el.innerText()).trim() : '';
+  };
+
+  await test('limite : autre zone qui défile, le résultat le dit', () =>
+    onBlock(context, sw, `${tall}?inside`, '#boxed', async ({ viewer, record, page }) => {
+      const text = await notice(viewer);
+      const top = await page.evaluate(() => document.getElementById('box').scrollTop);
+      return { ok: record.partial === 'scroller' && /partie visible/.test(text) && record.height === 600 && top === 0, detail: `${record.partial}, ${record.width}×${record.height}, « ${text} »` };
+    }));
+
+  await test('limite : bloc qui défile lui-même, hors zone principale, le résultat le dit', () =>
+    onBlock(context, sw, `${tall}?inside`, '#box', async ({ viewer, record }) => {
+      const text = await notice(viewer);
+      return { ok: record.partial === 'scroller' && /partie visible/.test(text) && record.height === 600, detail: `${record.partial}, ${record.width}×${record.height}, « ${text} »` };
+    }));
+
+  await test('limite : fixe plus haut que l’écran, le résultat le dit', () =>
+    onBlock(context, sw, `${tall}?tallfixed`, '#tallfixed', async ({ viewer, record, page }) => {
+      const text = await notice(viewer);
+      const innerH = await page.evaluate(() => innerHeight);
+      return { ok: record.partial === 'fixed' && /partie visible/.test(text) && record.height === (innerH - 100) * 2 && record.width === 400, detail: `${record.partial}, ${record.width}×${record.height}, « ${text} »` };
+    }));
+
+  await test('limite : plus large que la fenêtre, le résultat le dit', () =>
+    onBlock(context, sw, `${tall}?wide`, '#wide', async ({ viewer, record, page }) => {
+      const text = await notice(viewer);
+      const innerW = await page.evaluate(() => innerWidth);
+      return { ok: record.partial === 'wide' && /coupé/.test(text) && record.width === innerW * 2 && record.height === 400, detail: `${record.partial}, ${record.width}×${record.height}, « ${text} »` };
+    }));
+
+  await test('limite : un bloc entier n’a aucune mention', () =>
+    onBlock(context, sw, tall, '#inner', async ({ viewer, record }) => ({ ok: !record.partial && !(await notice(viewer)), detail: String(record.partial) })));
+
+  await test('limite : onglet changé', async () => {
+    const other = await context.newPage();
+    await other.goto(`${base}/iframe.html`);
+    const { page, tabId } = await openTab(context, sw, tall);
+    try {
+      const out = await refused(context, sw, tabId, async () => {
+        await chooseAndValidate(sw, page, tabId, '#inner');
+        await sleep(3000);
+        await other.bringToFront();
+      });
+      await page.bringToFront();
+      const after = await page.evaluate(() => ({ leftover: [...document.querySelectorAll('style')].some((s) => s.textContent.includes('scrollbar-width: none')), head: getComputedStyle(document.getElementById('head')).opacity }));
+      return { ok: /onglet a changé/.test(out.title) && out.viewers === 0 && !after.leftover && after.head === '1', detail: `${out.title} ; ${JSON.stringify(after)}` };
+    } finally {
+      await other.close();
+      await page.close();
+    }
+  });
+
+  await test('limite : onglet fermé', async () => {
+    for (const p of context.pages()) if (p.url().includes('/popup/popup.html')) await p.close();
+    await sw.evaluate(() => {
+      self.__logged = [];
+      if (!self.__original) self.__original = console.error;
+      console.error = (...args) => self.__logged.push(args.join(' '));
+      self.addEventListener('unhandledrejection', (event) => self.__logged.push(`rejet non intercepté : ${event.reason}`));
+    });
+    const { page, tabId } = await openTab(context, sw, tall);
+    await chooseAndValidate(sw, page, tabId, '#inner');
+    await sleep(3000);
+    await page.close();
+    await sleep(2500);
+    const state = await sw.evaluate(async () => ({
+      logged: self.__logged,
+      popups: (await chrome.runtime.getContexts({ contextTypes: ['POPUP'] })).length,
+      capturing: (await chrome.storage.session.get('capturing')).capturing ?? null,
+      lastError: (await chrome.storage.session.get('lastError')).lastError ?? null,
+    }));
+    await sw.evaluate(() => {
+      console.error = self.__original;
+    });
+    const viewers = context.pages().filter((p) => p.url().includes('/viewer/viewer.html')).length;
+    return { ok: state.logged.length === 0 && state.popups === 0 && !state.capturing && !state.lastError && viewers === 0, detail: JSON.stringify({ ...state, viewers }) };
+  });
+
+  await test('limite : page interdite', async () => {
+    const { page, tabId } = await openTab(context, sw, 'chrome://version');
+    try {
+      const out = await refused(context, sw, tabId, () => sw.evaluate(async (tabId) => self.onCommandForTest('capture-pick', await chrome.tabs.get(tabId)), tabId));
+      return { ok: /interdit/.test(out.title) && /interdit/.test(out.stored) && out.viewers === 0, detail: out.title };
+    } finally {
+      await page.close();
+    }
+  });
+
+  await test('limite : page de résultats de l’extension', async () => {
+    const { page, tabId } = await openTab(context, sw, `chrome-extension://${new URL(sw.url()).host}/viewer/viewer.html`);
+    try {
+      const out = await refused(context, sw, tabId, () => sw.evaluate(async (tabId) => self.onCommandForTest('capture-pick', await chrome.tabs.get(tabId)), tabId));
+      return { ok: /page de résultats/.test(out.title), detail: out.title };
+    } finally {
+      await page.close();
+    }
+  });
+
+  for (const [label, url, selector] of [
+    ['bloc de hauteur nulle', `${tall}?zero`, '#zero'],
+    ['bloc invisible (visibility: hidden)', `${tall}?invisible`, '#unseen'],
+    ['bloc invisible (display: none)', `${tall}?invisible`, '#gone'],
+  ]) {
+    await test(`limite : ${label}`, async () => {
+      const { page, tabId } = await openTab(context, sw, url);
+      try {
+        const out = await refused(context, sw, tabId, () => chooseAndValidate(sw, page, tabId, selector));
+        return { ok: /pas visible/.test(out.title) && /pas visible/.test(out.stored) && out.viewers === 0, detail: out.title };
+      } finally {
+        await page.close();
+      }
+    });
+  }
+
+  await test('limite : bloc disparu après préparation', async () => {
+    const { page, tabId } = await openTab(context, sw, `${tall}?vanish`);
+    try {
+      const out = await refused(context, sw, tabId, () => chooseAndValidate(sw, page, tabId, '#below'));
+      return { ok: /disparu/.test(out.title) && out.viewers === 0, detail: out.title };
+    } finally {
+      await page.close();
+    }
+  });
+
+  await test('limite : la capture refusée pendant une autre', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    try {
+      const opened = nextViewer(context);
+      await chooseAndValidate(sw, page, tabId, '#inner');
+      await sleep(1500);
+      const answer = await sw.evaluate(async (tabId) => {
+        try {
+          await self.startPick(tabId, 'block');
+          return 'ouvert';
+        } catch (err) {
+          return err.message;
+        }
+      }, tabId);
+      const viewer = await opened;
+      await viewer.close();
+      return { ok: /déjà en cours/.test(answer), detail: answer };
+    } finally {
+      await page.close();
+    }
+  });
+
+  await test('annuler : long bloc, aucun fichier, page remise en état', async () => {
+    // La fenêtre de l'icône dans sa propre fenêtre de navigateur : dans un onglet voisin, elle rendrait la page inactive et arrêterait la capture.
+    const opening = context.waitForEvent('page', { predicate: (p) => p.url().includes('/popup/popup.html') });
+    await sw.evaluate(() => chrome.windows.create({ url: chrome.runtime.getURL('popup/popup.html'), type: 'popup', width: 320, height: 500, focused: false }));
+    const popup = await opening;
+    const count = () =>
+      popup.evaluate(async () => {
+        const { listCaptures } = await import(chrome.runtime.getURL('lib/db.js'));
+        return (await listCaptures()).length;
+      });
+    const { page, tabId } = await openTab(context, sw, tall);
+    try {
+      const before = await count();
+      await chooseAndValidate(sw, page, tabId, '#inner');
+      await sleep(2500);
+      // Rouverte, la fenêtre retrouve la capture en cours et son bouton.
+      await popup.reload();
+      await popup.waitForSelector('#cancel:not([hidden])', { timeout: 5000 });
+      const during = await popup.evaluate(() => ({ text: document.getElementById('status-text').textContent, disabled: document.getElementById('full').disabled }));
+      await popup.screenshot({ path: path.join(WORK, 'annuler.png') });
+      await popup.click('#cancel');
+      let state = 'capturing';
+      for (let i = 0; i < 40 && state; i++) {
+        await sleep(250);
+        state = await sw.evaluate(async () => (await chrome.storage.session.get('capturing')).capturing ?? null);
+      }
+      const after = await page.evaluate(() => ({ y: scrollY, leftover: [...document.querySelectorAll('style')].some((s) => s.textContent.includes('scrollbar-width: none')), head: getComputedStyle(document.getElementById('head')).opacity }));
+      const stored = await count();
+      const viewers = context.pages().filter((p) => p.url().includes('/viewer/viewer.html')).length;
+      const silent = await sw.evaluate(async (tabId) => ({ badge: await chrome.action.getBadgeText({ tabId }), error: (await chrome.storage.session.get('lastError')).lastError ?? null }), tabId);
+      const ok = during.disabled && /bloc/.test(during.text) && !state && stored === before && viewers === 0 && after.y === 0 && !after.leftover && after.head === '1' && silent.badge === '' && !silent.error;
+      return { ok, detail: JSON.stringify({ during, state, before, stored, viewers, after, silent }) };
+    } finally {
+      await popup.close();
+      await page.close();
+    }
+  });
+
+  await test('annuler : relancer juste après fonctionne', async () => {
+    const { page, tabId } = await openTab(context, sw, tall);
+    try {
+      await chooseAndValidate(sw, page, tabId, '#inner');
+      await sleep(2000);
+      await sw.evaluate(() => self.cancelCaptureForTest());
+      for (let i = 0; i < 40; i++) {
+        await sleep(250);
+        if (!(await sw.evaluate(async () => (await chrome.storage.session.get('capturing')).capturing ?? null))) break;
+      }
+      const opened = nextViewer(context);
+      await chooseAndValidate(sw, page, tabId, '#leaf');
+      const viewer = await opened;
+      const record = await viewerRecord(viewer);
+      await viewer.close();
+      return { ok: record.width === 600, detail: `${record.width}×${record.height}` };
+    } finally {
+      await page.close();
+    }
+  });
+
+  await test('limite : 100 000 points', () =>
+    onBlock(context, sw, `${tall}?huge`, '#inner', async ({ viewer, record }) => {
+      const shown = await viewer.locator('#notice').isVisible();
+      return { ok: record.truncated === true && record.height === 200000 && shown, detail: `${record.width}×${record.height}, ${record.sliceCount} tranches, mention ${shown}` };
+    }));
+}
+
 async function main() {
   await fs.rm(WORK, { recursive: true, force: true });
   await fs.mkdir(WORK, { recursive: true });
@@ -470,11 +1163,11 @@ async function main() {
   const server = await serve(path.join(HERE, 'pages'));
   const base = `http://127.0.0.1:${server.address().port}`;
   // Un navigateur par groupe : l'essai d'endormissement remplace le service worker.
-  const groups = { calque: groupCalque };
+  const groups = { calque: groupCalque, region: groupRegion, barres: groupBarres, limites: groupLimites };
   try {
     for (const [name, group] of Object.entries(groups)) {
       if (ONLY && ONLY !== name) continue;
-      const context = await launch(extension, `profile-${name}`, WORK);
+      const context = await launch(extension, `profile-${name}`, WORK, name === 'barres' ? { ignoreDefaultArgs: ['--hide-scrollbars'] } : {});
       try {
         const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
         await group(context, sw, base);

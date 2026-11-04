@@ -63,8 +63,9 @@ export function serve(root) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
-export function launch(extension, profile, work) {
+export function launch(extension, profile, work, options = {}) {
   return chromium.launchPersistentContext(path.join(work, profile), {
+    ...options,
     channel: 'chromium',
     headless: true,
     viewport: null,

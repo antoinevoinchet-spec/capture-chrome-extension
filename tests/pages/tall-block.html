@@ -28,18 +28,34 @@
       if (params.has('modal')) document.body.insertAdjacentHTML('beforeend', '<div id="modal"></div>');
       if (params.has('bars')) document.head.insertAdjacentHTML('beforeend', '<style>::-webkit-scrollbar { width: 15px; height: 15px; } ::-webkit-scrollbar-thumb { background: #888; }</style>');
       if (params.has('lazy')) {
-        // Une image paresseuse au-dessus du bloc : elle le repousse quand on défile.
-        const canvas = document.createElement('canvas');
-        canvas.width = 800;
-        canvas.height = 300;
-        canvas.getContext('2d').fillRect(0, 0, 800, 300);
-        const img = document.createElement('img');
-        img.loading = 'lazy';
-        img.id = 'lazy';
-        img.style.display = 'block';
-        img.src = canvas.toDataURL();
+        // Un contenu paresseux au-dessus du bloc : il le repousse de 300 points quand on défile jusqu'à lui.
         document.getElementById('above').style.height = '1800px';
-        document.getElementById('above').after(img);
+        const lazy = document.createElement('div');
+        lazy.id = 'lazy';
+        lazy.style.cssText = 'height: 1px; background: #333333';
+        document.getElementById('above').after(lazy);
+        new IntersectionObserver(([entry], observer) => {
+          if (!entry.isIntersecting) return;
+          lazy.style.height = '300px';
+          observer.disconnect();
+        }).observe(lazy);
+      }
+      const add = (html) => document.body.insertAdjacentHTML('beforeend', html);
+      if (params.has('inside')) document.getElementById('above').insertAdjacentHTML('afterbegin', '<div id="box" style="height: 300px; overflow: auto; background: #fff"><div id="boxed" style="height: 2000px; background: #22aa44"></div></div>');
+      if (params.has('tallfixed')) add('<div id="tallfixed" style="position: fixed; top: 100px; left: 0; width: 200px; height: 3000px; background: #cc4400; z-index: 9"></div>');
+      if (params.has('wide')) document.getElementById('above').insertAdjacentHTML('afterbegin', '<div id="wide" style="width: 3000px; height: 200px; background: #22aa44"></div>');
+      if (params.has('zero')) document.getElementById('above').insertAdjacentHTML('afterbegin', '<div id="zero" style="height: 0"></div>');
+      if (params.has('invisible')) document.getElementById('above').insertAdjacentHTML('afterbegin', '<div id="unseen" style="height: 100px; visibility: hidden"></div><div id="gone" style="height: 100px; display: none"></div>');
+      // Un bloc plus bas que l'écran, retiré par le site dès qu'on défile.
+      if (params.has('vanish')) window.addEventListener('scroll', () => document.getElementById('below')?.remove());
+      if (params.has('huge')) document.getElementById('inner').style.height = '101000px';
+      if (params.has('back')) {
+        // Un fond fixe derrière la page, et un bloc transparent posé dessus.
+        document.documentElement.style.background = 'transparent';
+        document.body.style.background = 'transparent';
+        document.getElementById('above').style.background = 'transparent';
+        document.getElementById('above').insertAdjacentHTML('afterbegin', '<div id="clear" style="margin: 100px 0 0 100px; width: 300px; height: 100px"></div>');
+        document.body.insertAdjacentHTML('beforeend', '<div id="back" style="position: fixed; inset: 0; z-index: -1; background: #a0d0ff"></div>');
       }
     </script>
   </body>

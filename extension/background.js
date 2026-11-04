@@ -213,21 +213,74 @@ async function captureVisible(tab) {
   };
 }
 
-// Première version : le rectangle choisi, tel qu'à l'écran.
+// Un bloc ou une zone. Les tranches sont rognées avant d'être enregistrées : la capture ressemble à une page plus petite, et le modèle ne change pas.
 async function captureRegion(tab, pick) {
-  const blob = await grab(tab);
-  const bmp = await createImageBitmap(blob);
-  const scale = bmp.width / pick.innerW;
-  const left = Math.max(0, Math.round(pick.rect.x * scale));
-  const top = Math.max(0, Math.round(pick.rect.y * scale));
-  const w = Math.max(1, Math.min(Math.round(pick.rect.w * scale), bmp.width - left));
-  const h = Math.max(1, Math.min(Math.round(pick.rect.h * scale), bmp.height - top));
-  const canvas = new OffscreenCanvas(w, h);
-  canvas.getContext('2d').drawImage(bmp, left, top, w, h, 0, 0, w, h);
-  bmp.close();
+  if (pick.mode === 'zone') return captureZone(tab, pick);
+  try {
+    const info = await inTab(tab.id, pagePrepare, [{ ...PAGE_OPTIONS, region: true }]);
+    if (info.gone) throw new CaptureError('Le bloc choisi a disparu de la page. Relance la capture et choisis-le de nouveau.');
+    if (info.empty) throw new CaptureError("Ce bloc n'est pas visible : il n'y a rien à capturer. Choisis-en un autre.");
+    const { region, clip } = info;
+    const offsets = [];
+    for (let offset = 0; ; offset += region.band) {
+      if (offset + region.band >= region.height) {
+        offsets.push(Math.max(0, region.height - region.band));
+        break;
+      }
+      offsets.push(offset);
+    }
+
+    const slices = [];
+    let scale = 0;
+    let size = null;
+    for (let i = 0; i < offsets.length; i++) {
+      const wanted = region.still ? region.start : region.top + offsets[i];
+      const actual = await inTab(tab.id, pageScrollTo, [wanted, true]);
+      const bmp = await createImageBitmap(await grab(tab));
+      if (!scale) {
+        scale = bmp.width / info.innerW;
+        const x = Math.round(region.left * scale);
+        size = { x, w: Math.min(Math.round((region.left + region.width) * scale), bmp.width) - x, h: Math.round(region.band * scale) };
+      }
+      // Sa place sur l'écran : tout en bas de la page, le défilement s'arrête avant d'amener le bloc en haut.
+      const top = clip.y + region.top + offsets[i] - actual;
+      const y = Math.max(0, Math.min(Math.round(top * scale), bmp.height - size.h));
+      slices.push({ y: Math.round(offsets[i] * scale), blob: await cutBitmap(bmp, size.x, y, size.w, size.h) });
+      progress(tab.id, i + 1, offsets.length);
+    }
+    const crop = { x: 0, y: 0, w: size.w, h: size.h };
+    return {
+      mode: 'region',
+      origin: 'bloc',
+      url: info.url || tab.url,
+      title: info.title || tab.title,
+      createdAt: Date.now(),
+      scale,
+      width: size.w,
+      height: Math.min(Math.round(region.height * scale), slices.at(-1).y + size.h),
+      crop,
+      slices,
+      scroller: info.scroller,
+      truncated: region.truncated,
+      ...(region.partial ? { partial: region.partial } : {}),
+    };
+  } finally {
+    await inTab(tab.id, pageRestore, []).catch(() => {});
+  }
+}
+
+// Une zone est ce qu'on voit à l'écran au moment du tracé : ni défilement, ni élément masqué.
+async function captureZone(tab, { rect, innerW }) {
+  const bmp = await createImageBitmap(await grab(tab));
+  const scale = bmp.width / innerW;
+  const x = Math.max(0, Math.round(rect.x * scale));
+  const y = Math.max(0, Math.round(rect.y * scale));
+  const w = Math.min(Math.round((rect.x + rect.w) * scale), bmp.width) - x;
+  const h = Math.min(Math.round((rect.y + rect.h) * scale), bmp.height) - y;
+  const blob = await cutBitmap(bmp, x, y, w, h);
   return {
     mode: 'region',
-    origin: pick.mode === 'zone' ? 'zone' : 'bloc',
+    origin: 'zone',
     url: tab.url,
     title: tab.title,
     createdAt: Date.now(),
@@ -235,10 +288,20 @@ async function captureRegion(tab, pick) {
     width: w,
     height: h,
     crop: { x: 0, y: 0, w, h },
-    slices: [{ y: 0, blob: await canvas.convertToBlob({ type: 'image/png' }) }],
+    slices: [{ y: 0, blob }],
     scroller: 'window',
     truncated: false,
   };
+}
+
+// Rogne une image dans un canvas à part, libéré aussitôt : une seule partie à la fois en mémoire.
+async function cutBitmap(bmp, x, y, w, h) {
+  const canvas = new OffscreenCanvas(w, h);
+  canvas.getContext('2d').drawImage(bmp, x, y, w, h, 0, 0, w, h);
+  bmp.close();
+  const blob = await canvas.convertToBlob({ type: 'image/png' });
+  canvas.width = canvas.height = 0;
+  return blob;
 }
 
 async function grab(tab) {
