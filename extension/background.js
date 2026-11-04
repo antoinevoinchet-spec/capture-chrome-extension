@@ -1,5 +1,6 @@
 import { pagePrepare, pageScrollTo, pageRegionRect, pageRestore } from './capture/page.js';
 import { pickerStart, pickerStop } from './capture/picker.js';
+import { DevicesCancelled, DevicesError, captureDevices } from './devices/devices.js';
 import { saveCapture, pruneCaptures } from './lib/db.js';
 import { setupWebImage } from './web-image/save-web-image.js';
 
@@ -11,7 +12,7 @@ const PAGE_MOVED = "La page a bougé pendant la capture (elle a changé de haute
 const BUSY_MESSAGE = "Une capture est déjà en cours : attends qu'elle finisse, puis recommence.";
 // La sélection en cours, dans storage.session : le service worker peut s'endormir pendant qu'on choisit.
 const PICK_KEY = 'picking';
-// La capture d'un bloc en cours, relue par la fenêtre de l'icône à sa réouverture pour proposer « Annuler ».
+// La capture d'un bloc ou des trois appareils en cours, relue par la fenêtre de l'icône à sa réouverture pour proposer « Annuler ».
 const CAPTURING_KEY = 'capturing';
 const PAGE_OPTIONS = {
   preload: true,
@@ -27,17 +28,24 @@ class CaptureCancelled extends Error {}
 let running = false;
 let cancelled = false;
 let lastGrabAt = 0;
+// Arrête la capture des trois appareils en cours.
+let stopDevices = null;
 
-// Un service worker qui démarre n'a aucune capture en cours : un état resté d'une panne ne doit pas bloquer la fenêtre.
-chrome.storage.session.remove(CAPTURING_KEY);
+// Un service worker qui démarre n'a aucune capture en cours : un état resté d'une panne ne doit pas bloquer la fenêtre, ni laisser un onglet temporaire.
+chrome.storage.session.get(CAPTURING_KEY).then(async ({ [CAPTURING_KEY]: left }) => {
+  await chrome.storage.session.remove(CAPTURING_KEY);
+  if (!left?.tempId) return;
+  await chrome.debugger.detach({ tabId: left.tempId }).catch(() => {});
+  await chrome.tabs.remove(left.tempId).catch(() => {});
+});
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type !== 'capture') return false;
+  if (msg?.type !== 'capture' && msg?.type !== 'capture-devices') return false;
   if (running) {
     sendResponse({ ok: false, error: BUSY_MESSAGE });
     return false;
   }
-  chrome.tabs.get(msg.tabId).then((tab) => runCapture(tab, msg.mode));
+  chrome.tabs.get(msg.tabId).then((tab) => runCapture(tab, msg.type === 'capture-devices' ? 'devices' : msg.mode));
   sendResponse({ ok: true });
   return false;
 });
@@ -52,6 +60,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg?.type === 'capture-cancel') {
     cancelled = true;
+    stopDevices?.(new DevicesCancelled('user'));
     // Le service worker est mort pendant la capture : plus rien à arrêter, la fenêtre doit quand même reprendre la main.
     if (!running) {
       chrome.storage.session.remove(CAPTURING_KEY);
@@ -134,8 +143,7 @@ async function runCapture(tab, mode, pick) {
     // Quel que soit le lancement, le calque de sélection n'apparaît jamais sur l'image.
     await removePicker(tab.id);
     await assertNotOwnPage(tab);
-    const record = await (mode === 'region' ? captureRegion(tab, pick) : mode === 'visible' ? captureVisible(tab) : captureFullPage(tab));
-    const id = await saveCapture(record);
+    const id = mode === 'devices' ? await captureGroup(tab) : await saveCapture(await (mode === 'region' ? captureRegion(tab, pick) : mode === 'visible' ? captureVisible(tab) : captureFullPage(tab)));
     await pruneCaptures(KEEP_CAPTURES, await displayedCaptures());
     badge(tab.id, '');
     notify({ type: 'capture-done', id });
@@ -146,8 +154,11 @@ async function runCapture(tab, mode, pick) {
     });
     return id;
   } catch (err) {
-    // Onglet fermé pendant la capture : c'est le choix de l'utilisateur, rien à signaler.
-    if (!(await chrome.tabs.get(tab.id).catch(() => null))) return null;
+    // Onglet fermé pendant la capture : c'est le choix de l'utilisateur, rien à signaler. Une fenêtre encore ouverte reprend la main.
+    if (!(await chrome.tabs.get(tab.id).catch(() => null))) {
+      notify({ type: 'capture-cancelled' });
+      return null;
+    }
     if (err instanceof CaptureCancelled) {
       badge(tab.id, '');
       notify({ type: 'capture-cancelled' });
@@ -248,6 +259,39 @@ async function captureVisible(tab) {
     scroller: 'window',
     truncated: false,
   };
+}
+
+// Téléphone, tablette, ordinateur : l'état publié dit où on en est, et l'onglet temporaire à fermer si le service worker meurt en route.
+async function captureGroup(tab) {
+  let state = { tabId: tab.id, mode: 'devices' };
+  const publish = (next) => {
+    state = { ...state, ...next };
+    return chrome.storage.session.set({ [CAPTURING_KEY]: state });
+  };
+  await publish({});
+  try {
+    const { ids } = await captureDevices(tab, {
+      onStart: async ({ tempId, halt }) => {
+        stopDevices = halt;
+        // « Annuler » cliqué avant que l'onglet temporaire n'existe.
+        if (cancelled) halt(new DevicesCancelled('user'));
+        await publish({ tempId });
+      },
+      onProgress: (step) => {
+        const share = (step.index + (step.total ? step.done / step.total : 0)) / step.count;
+        badge(tab.id, `${Math.round(share * 100)}%`, '#1a73e8');
+        notify({ type: 'capture-progress', ...step });
+        publish(step);
+      },
+    });
+    return ids[0];
+  } catch (err) {
+    if (err instanceof DevicesCancelled) throw new CaptureCancelled();
+    if (err instanceof DevicesError) throw new CaptureError(err.message);
+    throw err;
+  } finally {
+    stopDevices = null;
+  }
 }
 
 // Un bloc ou une zone. Les tranches sont rognées avant d'être enregistrées : la capture ressemble à une page plus petite, et le modèle ne change pas.

@@ -5,6 +5,7 @@ const els = {
   visible: document.getElementById('visible'),
   pickBlock: document.getElementById('pick-block'),
   pickZone: document.getElementById('pick-zone'),
+  devices: document.getElementById('devices'),
   status: document.getElementById('status'),
   statusText: document.getElementById('status-text'),
   barFill: document.getElementById('bar-fill'),
@@ -49,6 +50,7 @@ els.full.addEventListener('click', () => start('full'));
 els.visible.addEventListener('click', () => start('visible'));
 els.pickBlock.addEventListener('click', () => pick('block'));
 els.pickZone.addEventListener('click', () => pick('zone'));
+els.devices.addEventListener('click', startDevices);
 els.recent.addEventListener('click', async () => {
   await chrome.tabs.create({ url: chrome.runtime.getURL('viewer/viewer.html') });
   window.close();
@@ -69,10 +71,17 @@ function showProgress(done, total, what) {
   els.statusText.textContent = `Capture ${what} : ${done} sur ${total}`;
 }
 
+// « Téléphone (1 sur 3) : image 2 sur 7 ». La barre avance sur l'ensemble des appareils.
+function showDevice({ label, index, count, done, total }) {
+  els.barFill.style.width = `${Math.round(((index + (total ? done / total : 0)) / count) * 100)}%`;
+  els.statusText.textContent = `${label} (${index + 1} sur ${count}) : ${total ? `image ${done} sur ${total}` : 'chargement de la page…'}`;
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'capture-progress' && !els.cancel.disabled) {
-    if (msg.block) els.cancel.hidden = false;
-    showProgress(msg.done, msg.total, msg.block ? 'du bloc' : 'de la page');
+    if (msg.block || msg.label) els.cancel.hidden = false;
+    if (msg.label) showDevice(msg);
+    else showProgress(msg.done, msg.total, msg.block ? 'du bloc' : 'de la page');
   }
   if (msg.type === 'capture-cancelled') {
     setBusy(false);
@@ -102,12 +111,15 @@ if (pendingImage) {
   if (Date.now() - pendingImage.at < 5 * 60_000) showError(refusalMessage(NOT_ALLOWED));
 }
 
-// Rouverte pendant la capture d'un bloc : la fenêtre retrouve la progression et le bouton d'annulation.
+// Rouverte pendant la capture d'un bloc ou des trois appareils : la fenêtre retrouve la progression et le bouton d'annulation.
 const { capturing } = await chrome.storage.session.get('capturing');
 if (capturing) {
   setBusy(true);
   els.cancel.hidden = false;
-  if (capturing.total) showProgress(capturing.done, capturing.total, 'du bloc');
+  if (capturing.mode === 'devices') {
+    if (capturing.label) showDevice(capturing);
+    else els.statusText.textContent = 'Préparation…';
+  } else if (capturing.total) showProgress(capturing.done, capturing.total, 'du bloc');
   else els.statusText.textContent = 'Préparation du bloc…';
 }
 
@@ -117,6 +129,17 @@ async function start(mode) {
   els.barFill.style.width = '0';
   els.statusText.textContent = mode === 'full' ? 'Préparation de la page…' : 'Capture…';
   const response = await chrome.runtime.sendMessage({ type: 'capture', mode, tabId: tab.id });
+  if (!response?.ok) showError(response?.error ?? 'Capture impossible.');
+}
+
+async function startDevices() {
+  els.error.hidden = true;
+  setBusy(true);
+  els.cancel.hidden = false;
+  els.cancel.disabled = false;
+  els.barFill.style.width = '0';
+  els.statusText.textContent = 'Préparation…';
+  const response = await chrome.runtime.sendMessage({ type: 'capture-devices', tabId: tab.id });
   if (!response?.ok) showError(response?.error ?? 'Capture impossible.');
 }
 
@@ -133,6 +156,7 @@ function setBusy(busy) {
   els.visible.disabled = busy;
   els.pickBlock.disabled = busy;
   els.pickZone.disabled = busy;
+  els.devices.disabled = busy;
   els.status.hidden = !busy;
 }
 

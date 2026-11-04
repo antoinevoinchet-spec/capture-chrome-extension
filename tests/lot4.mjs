@@ -1,5 +1,5 @@
 // Tests du lot 4 : téléphone, tablette, ordinateur.
-// Usage : node lot4.mjs <dossier de sortie> [essai|scenarios|reelle|site|long|visible|direct] [motif]
+// Usage : node lot4.mjs <dossier de sortie> [essai|scenarios|reelle|appareils|groupe|site|long|visible|direct] [motif]
 // `site` (un vrai site, dont l'adresse est obligatoire dans SITE_URL), `long` (100 000 points), `visible` et `direct` (une vraie fenêtre) ne tournent que si on les nomme.
 
 import { chromium } from 'playwright';
@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { check, launch, openTab, prepareExtension, results } from './lib.mjs';
+import { EXTENSION, MANIFEST_EXPECTED, capture, check, launch, openTab, prepareExtension, results } from './lib.mjs';
 
 const run = promisify(execFile);
 const HERE = import.meta.dirname;
@@ -63,7 +63,7 @@ function solidPng(rgb) {
 
 // Deux serveurs (deux origines) : l'image paresseuse, et une redirection qui n'envoie que les mobiles vers l'autre origine (m.site.fr).
 async function servers() {
-  const stats = { lazy: 0 };
+  const stats = { lazy: 0, measures: [], fragile: 0 };
   const lazy = solidPng(LAZY_COLOR);
   const pages = path.join(HERE, 'pages');
   let other = '';
@@ -72,6 +72,17 @@ async function servers() {
     if (url.pathname === '/lazy.png') {
       stats.lazy++;
       return res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' }).end(lazy);
+    }
+    if (url.pathname === '/measure') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      stats.measures.push(JSON.parse(body));
+      return res.writeHead(204).end();
+    }
+    // Une page qui répond une fois, puis plus du tout : la capture rencontre une vraie erreur de chargement.
+    if (url.pathname === '/fragile') {
+      if (stats.fragile-- <= 0) return res.destroy();
+      url.pathname = '/device-probe.html';
     }
     if (url.pathname === '/redirect' && /iPhone|iPad/.test(req.headers['user-agent'] ?? '')) {
       return res.writeHead(302, { location: `${other}/device-probe.html?from=redirect` }).end();
@@ -93,6 +104,25 @@ async function servers() {
 
 // Installé dans le service worker de la copie de test : lance une capture et rend ce qu'il faut pour la juger.
 function installHelpers() {
+  // Les onglets temporaires, lus dans l'état que la capture publie.
+  self.tempIds = new Set();
+  chrome.storage.onChanged.addListener((changes) => {
+    const tempId = changes.capturing?.newValue?.tempId;
+    if (tempId) self.tempIds.add(tempId);
+  });
+  self.leftovers = async () => {
+    const tabs = (await chrome.tabs.query({})).filter(({ id }) => self.tempIds.has(id));
+    const targets = (await chrome.debugger.getTargets()).filter(({ tabId }) => self.tempIds.has(tabId));
+    return { seen: self.tempIds.size, tabs: tabs.length, targets: targets.length };
+  };
+  // Le groupe d'une capture enregistrée, relu en base.
+  self.groupSummary = async (id) => {
+    const order = ['telephone', 'tablette', 'ordinateur'];
+    const all = await self.listCapturesForTest();
+    const first = all.find((capture) => capture.id === id);
+    const members = all.filter((capture) => first?.group && capture.group?.id === first.group.id).sort((a, b) => order.indexOf(a.group.device) - order.indexOf(b.group.device));
+    return { firstDevice: first?.group?.device ?? null, count: members.length, devices: await Promise.all(members.map((record) => self.summaryOf({ record, measure: null }))) };
+  };
   self.measureAfterLoad = async (send) => {
     const expression = `(async () => {
       const raf = await new Promise((resolve) => {
@@ -151,15 +181,16 @@ function installHelpers() {
       bytes: slices.reduce((sum, slice) => sum + slice.blob.size, 0),
     };
   };
+  self.summaryOf = summary;
   self.runEssai = async (tabId, opts = {}) => {
     const real = await chrome.tabs.get(tabId);
-    const origin = opts.url ? { ...real, url: opts.url } : real;
+    const origin = 'url' in opts ? { ...real, url: opts.url } : real;
     const started = Date.now();
     let tempId = null;
     let halt = null;
     let fired = false;
-    const onProgress = async () => {
-      if (fired || !opts.scenario) return;
+    const onProgress = async ({ done }) => {
+      if (fired || !opts.scenario || !done) return;
       fired = true;
       if (opts.scenario === 'cancel') halt(new self.DevicesCancelled('user'));
       if (opts.scenario === 'close-temp') await chrome.tabs.remove(tempId);
@@ -175,6 +206,7 @@ function installHelpers() {
     try {
       const out = await self.captureDevicesForTest(origin, {
         ...opts.capture,
+        ...(opts.only ? { devices: self.DevicesForTest.filter(({ key }) => key === opts.only) } : {}),
         afterLoad: self.measureAfterLoad,
         onStart: (info) => {
           tempId = info.tempId;
@@ -213,8 +245,8 @@ const runEssai = (sw, tabId, opts) => sw.evaluate(({ tabId, opts }) => self.runE
 const originState = (page) => page.evaluate(() => ({ href: location.href, ua: navigator.userAgent, innerWidth, value: document.getElementById('saisie')?.value ?? null }));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-async function originPage(context, sw, base) {
-  const opened = await openTab(context, sw, `${base}/device-probe.html?origin=1`);
+async function originPage(context, sw, base, address = '/device-probe.html?origin=1') {
+  const opened = await openTab(context, sw, `${base}${address}`);
   await opened.page.evaluate(() => document.body.insertAdjacentHTML('afterbegin', '<input id="saisie" />'));
   await opened.page.fill('#saisie', 'texte saisi');
   return opened;
@@ -329,6 +361,296 @@ async function groupReelle(context, sw, env) {
     ok: hosts === false && out.ok && out.devices[0].width === 780 && out.devices[1].width === 1640 && near(out.devices[0].marker, [255, 0, 0]) && near(out.devices.at(-1).bottom, LAZY_COLOR),
     detail: `hôtes ${hosts} ; ${out.error ?? out.devices.map(({ width }) => width).join(' ')}`,
   }));
+  await test("vraie extension : hors du clic sur l'icône, l'adresse est illisible et le message le dit", async () => {
+    const stored = await sw.evaluate(async (tabId) => (await chrome.tabs.get(tabId)).url ?? null, tabId);
+    const id = await sw.evaluate((tabId) => self.captureTab(tabId, 'devices'), tabId);
+    const error = (await sw.evaluate(() => chrome.storage.session.get('lastError'))).lastError?.message ?? '';
+    return { ok: stored === null && !id && /icône/.test(error), detail: `adresse ${stored} ; ${error}` };
+  });
+  await page.close();
+}
+
+// --- Trois appareils en une action ---
+
+const capturing = (sw) => sw.evaluate(async () => (await chrome.storage.session.get('capturing')).capturing ?? null);
+
+async function waitCapturing(sw, wanted, timeout = 60_000) {
+  const limit = Date.now() + timeout;
+  while (Date.now() < limit) {
+    const state = await capturing(sw);
+    if (wanted(state)) return state;
+    await sleep(100);
+  }
+  throw new Error(`état de capture attendu non atteint : ${JSON.stringify(await capturing(sw))}`);
+}
+
+const firstImage = (state) => state?.done >= 1;
+const startDevices = (sw, tabId) =>
+  sw.evaluate((tabId) => {
+    self.devicesRun = self.captureTab(tabId, 'devices');
+  }, tabId);
+const endDevices = (sw) => sw.evaluate(() => self.devicesRun);
+const storedCount = (sw) => sw.evaluate(async () => (await self.listCapturesForTest()).length);
+const closeExtras = async (context) => {
+  for (const page of context.pages()) if (/popup\/popup\.html|viewer\/viewer\.html/.test(page.url())) await page.close();
+};
+// Ce qu'une sortie a dit à la personne. La fenêtre ouverte pour afficher un refus efface `lastError` en le lisant : le titre de l'icône le garde.
+const silence = (sw, tabId) =>
+  sw.evaluate(async (tabId) => {
+    const title = await chrome.action.getTitle({ tabId }).catch(() => '');
+    return {
+      badge: await chrome.action.getBadgeText({ tabId }).catch(() => ''),
+      error: (await chrome.storage.session.get('lastError')).lastError?.message ?? (title.startsWith('Capture impossible') ? title : null),
+    };
+  }, tabId);
+
+// La fenêtre de l'icône, dans sa propre fenêtre de navigateur. L'onglet « actif » qu'elle lit est remplacé par l'onglet à capturer.
+async function openPopup(context, sw, tabId) {
+  const opening = context.waitForEvent('page', { predicate: (page) => page.url().includes('/popup/popup.html') });
+  await sw.evaluate(() => chrome.windows.create({ url: chrome.runtime.getURL('popup/popup.html'), type: 'popup', width: 320, height: 620, focused: false }));
+  const popup = await opening;
+  await popup.addInitScript((tabId) => {
+    const query = chrome.tabs.query.bind(chrome.tabs);
+    chrome.tabs.query = async (info) => (info.active ? [await chrome.tabs.get(tabId)] : query(info));
+  }, tabId);
+  await popup.reload();
+  await popup.waitForSelector('#devices');
+  return popup;
+}
+
+async function groupAppareils(context, sw, env) {
+  console.log('\n— Trois appareils en une action');
+  const { base, stats } = env;
+  const probe = '/device-probe.html?origin=1&beacon=1';
+
+  await test('manifeste : version 0.5.0 et permissions exactes, sans accès aux sites', async () => {
+    const manifest = JSON.parse(await fs.readFile(path.join(EXTENSION, 'manifest.json'), 'utf8'));
+    const ok = manifest.version === '0.5.0' && MANIFEST_EXPECTED.version === '0.5.0' && same(manifest.permissions, MANIFEST_EXPECTED.permissions) && manifest.permissions.includes('debugger') && !manifest.host_permissions;
+    return { ok, detail: `${manifest.version} ; ${manifest.permissions}` };
+  });
+
+  // Une capture réussie, par le même chemin qu'un clic.
+  const { page, tabId } = await originPage(context, sw, base, probe);
+  await sleep(400);
+  const before = await originState(page);
+  stats.measures = [];
+  stats.lazy = 0;
+  const done = await capture(context, sw, tabId, 'devices');
+  const group = done.id ? await sw.evaluate((id) => self.groupSummary(id), done.id) : { count: 0, devices: [] };
+  await report('appareils', { done: done.id, error: done.error, seconds: done.seconds, group });
+  const [telephone, tablette, ordinateur] = group.devices;
+  const [mobile, tall, desk] = stats.measures;
+
+  await test("appareils : le groupe est enregistré, et la page de résultats s'ouvre sur le téléphone", async () => ({
+    ok: group.count === 3 && group.firstDevice === 'telephone' && Boolean(done.viewer),
+    detail: `${done.error ?? ''} ${group.count} captures, ${group.firstDevice}, ${done.seconds} s`,
+  }));
+  await test('appareils : largeur des images égale à largeur × densité, à 2 px près', async () => ({
+    ok: Math.abs(telephone.width - 780) <= 2 && Math.abs(tablette.width - 1640) <= 2,
+    detail: `${telephone.width} ${tablette.width}`,
+  }));
+  await test('appareils : bon marqueur CSS par appareil', async () => ({
+    ok: near(telephone.marker, [255, 0, 0]) && near(tablette.marker, [0, 255, 0]) && near(ordinateur.marker, [0, 0, 255]),
+    detail: `${telephone.marker} / ${tablette.marker} / ${ordinateur.marker}`,
+  }));
+  await test('appareils : maxTouchPoints et identité sous émulation', async () => ({
+    ok: mobile.maxTouchPoints > 0 && tall.maxTouchPoints > 0 && /iPhone/.test(mobile.userAgent) && /iPad/.test(tall.userAgent) && desk.maxTouchPoints === 0 && desk.userAgent === before.ua,
+    detail: `${mobile.maxTouchPoints} ${tall.maxTouchPoints} ${desk.maxTouchPoints}`,
+  }));
+  await test('appareils : pas de débordement horizontal', async () => ({
+    ok: stats.measures.every(({ scrollWidth, innerWidth }) => scrollWidth <= innerWidth) && mobile.innerWidth === 390 && tall.innerWidth === 820,
+    detail: stats.measures.map(({ scrollWidth, innerWidth }) => `${scrollWidth}/${innerWidth}`).join(' '),
+  }));
+  await test('appareils : image paresseuse du bas chargée', async () => ({
+    ok: group.devices.every(({ bottom }) => near(bottom, LAZY_COLOR)),
+    detail: group.devices.map(({ bottom }) => bottom).join(' / '),
+  }));
+  await test('appareils : éléments fixes masqués', async () => ({
+    ok: group.devices.every(({ headerFirst, headerNext }) => near(headerFirst, [255, 0, 170]) && headerNext && !near(headerNext, [255, 0, 170])),
+    detail: group.devices.map(({ headerFirst, headerNext }) => `${headerFirst}→${headerNext}`).join(' / '),
+  }));
+  await test('appareils : ordinateur à la taille et à la densité réelles de la fenêtre', async () => ({
+    ok: desk.innerWidth === before.innerWidth && desk.dpr === 2 && ordinateur.scale === 2 && ordinateur.width === before.innerWidth * 2,
+    detail: `${desk.innerWidth}/${before.innerWidth}, densité ${desk.dpr}, ${ordinateur.width} px`,
+  }));
+
+  // Les sorties, chacune avec une vraie capture lancée. `act` agit une fois la première image prise.
+  const outcomes = [{ label: 'succès', before, after: await originState(page), left: await sw.evaluate(() => self.leftovers()), id: done.id }];
+  await closeExtras(context);
+  const exit = async (label, address, act) => {
+    const opened = await originPage(context, sw, base, address);
+    const start = await originState(opened.page);
+    const stored = await storedCount(sw);
+    await startDevices(sw, opened.tabId);
+    if (act) await act(opened);
+    const id = await endDevices(sw);
+    const left = await sw.evaluate(() => self.leftovers());
+    const outcome = { label, before: start, after: await originState(opened.page), left, id, added: (await storedCount(sw)) - stored, noise: await silence(sw, opened.tabId) };
+    outcomes.push(outcome);
+    await closeExtras(context);
+    await opened.page.close();
+    return outcome;
+  };
+  const cancelled = await exit('annulation', probe, async (opened) => {
+    await waitCapturing(sw, firstImage);
+    const popup = await openPopup(context, sw, opened.tabId);
+    await popup.waitForSelector('#cancel:not([hidden])', { timeout: 5000 });
+    await popup.click('#cancel');
+  });
+  const closed = await exit('onglet temporaire fermé', probe, async () => {
+    const { tempId } = await waitCapturing(sw, firstImage);
+    await sw.evaluate((tempId) => chrome.tabs.remove(tempId), tempId);
+  });
+  const detached = await exit('détachement forcé', probe, async () => {
+    const { tempId } = await waitCapturing(sw, firstImage);
+    await sw.evaluate((tempId) => chrome.debugger.detach({ tabId: tempId }), tempId);
+  });
+  stats.fragile = 1;
+  const failed = await exit('erreur', '/fragile?origin=1');
+
+  await test("remise en état : onglet d'origine intact après succès, annulation, onglet fermé, détachement forcé et erreur", async () => ({
+    ok: outcomes.every(({ before, after }) => same(before, after)),
+    detail: outcomes.filter(({ before, after }) => !same(before, after)).map(({ label, after }) => `${label} ${JSON.stringify(after).slice(0, 80)}`).join(' ; ') || `${outcomes.length} sorties`,
+  }));
+  await test("remise en état : plus d'onglet temporaire ni d'attachement", async () => {
+    const final = await sw.evaluate(() => self.leftovers());
+    return { ok: final.seen >= 4 && final.tabs === 0 && final.targets === 0 && outcomes.every(({ left }) => left.tabs === 0 && left.targets === 0), detail: JSON.stringify(final) };
+  });
+  await test('annuler et onglet temporaire fermé : aucune capture, aucun message parasite', async () => ({
+    ok: [cancelled, closed].every(({ id, added, noise }) => !id && added === 0 && !noise.error && noise.badge === ''),
+    detail: JSON.stringify([cancelled, closed].map(({ id, added, noise }) => ({ id, added, noise }))),
+  }));
+  await test('détachement forcé : message en français qui dit quoi faire', async () => ({
+    ok: !detached.id && detached.added === 0 && /débogueur/.test(detached.noise.error ?? '') && /Relance/.test(detached.noise.error ?? '') && !/Debugger/.test(detached.noise.error ?? ''),
+    detail: detached.noise.error,
+  }));
+  await test('erreur de chargement : message en français qui dit quoi faire, aucune capture', async () => ({
+    ok: !failed.id && failed.added === 0 && /ne s'est pas chargée/.test(failed.noise.error ?? '') && /Relance|relance/.test(failed.noise.error ?? ''),
+    detail: failed.noise.error,
+  }));
+
+  await test("onglet d'origine fermé : aucune capture, aucun message", async () => {
+    const opened = await originPage(context, sw, base);
+    const stored = await storedCount(sw);
+    await startDevices(sw, opened.tabId);
+    await waitCapturing(sw, firstImage);
+    await opened.page.close();
+    const id = await endDevices(sw);
+    const left = await sw.evaluate(() => self.leftovers());
+    const error = (await silence(sw, opened.tabId)).error;
+    return { ok: !id && (await storedCount(sw)) === stored && left.tabs === 0 && !error, detail: JSON.stringify({ id, left, error }) };
+  });
+
+  // La fenêtre de l'icône.
+  const held = await originPage(context, sw, base, probe);
+  const popup = await openPopup(context, sw, held.tabId);
+  await test("fenêtre : le bouton annonce le bandeau et l'état initial, sans parler de sa couleur", async () => {
+    const label = (await popup.locator('#devices').innerText()).replace(/\s+/g, ' ');
+    await popup.screenshot({ path: path.join(WORK, 'fenetre.png') });
+    return { ok: /Téléphone, tablette, ordinateur/.test(label) && /bandeau/.test(label) && /état initial/.test(label) && !/jaune/.test(label), detail: label };
+  });
+  await test("fenêtre : le clic lance la capture, indique l'appareil, et une capture à la fois", async () => {
+    await popup.click('#devices');
+    await waitCapturing(sw, firstImage);
+    await popup.waitForFunction(() => /Téléphone/.test(document.getElementById('status-text').textContent));
+    const shown = await popup.evaluate(() => ({ text: document.getElementById('status-text').textContent, cancel: !document.getElementById('cancel').hidden, off: document.getElementById('devices').disabled }));
+    const busy = await popup.evaluate((tabId) => chrome.runtime.sendMessage({ type: 'capture-devices', tabId }), held.tabId);
+    return { ok: shown.cancel && shown.off && busy?.ok === false && /déjà en cours/.test(busy.error), detail: `${shown.text} ; ${busy?.error}` };
+  });
+  await test("fenêtre : rouverte, elle retrouve l'appareil en cours et « Annuler »", async () => {
+    await popup.reload();
+    await popup.waitForSelector('#cancel:not([hidden])', { timeout: 5000 });
+    await popup.screenshot({ path: path.join(WORK, 'fenetre-en-cours.png') });
+    const text = await popup.locator('#status-text').innerText();
+    await popup.click('#cancel');
+    await waitCapturing(sw, (state) => !state);
+    const free = await popup.evaluate(() => !document.getElementById('devices').disabled && document.getElementById('status').hidden);
+    return { ok: /Téléphone|Tablette|Ordinateur/.test(text) && free, detail: `${text} ; fenêtre libérée : ${free}` };
+  });
+  await popup.close();
+  await held.page.close();
+
+  await test('refus : page interdite', async () => {
+    const { page: internal, tabId: internalId } = await openTab(context, sw, 'chrome://version');
+    const opened = await sw.evaluate((id) => self.captureTab(id, 'devices'), internalId);
+    const noise = await silence(sw, internalId);
+    const url = await sw.evaluate(async (id) => (await chrome.tabs.get(id)).url ?? null, internalId);
+    await closeExtras(context);
+    await internal.close();
+    return { ok: !opened && /interdit/.test(noise.error ?? ''), detail: `adresse ${url} ; ${noise.error}` };
+  });
+  await test('refus : fichier local, message qui oriente vers « Page entière »', async () => {
+    const { page: local, tabId: localId } = await openTab(context, sw, `${base}/device-probe.html`);
+    const out = await runEssai(sw, localId, { url: 'file:///tmp/page.html' });
+    await local.close();
+    return { ok: !out.ok && /Page entière/.test(out.error) && !out.tempId, detail: out.error };
+  });
+  await test('refus : adresse illisible, message qui dit de cliquer sur l’icône', async () => {
+    const { page: local, tabId: localId } = await openTab(context, sw, `${base}/device-probe.html`);
+    const out = await runEssai(sw, localId, { url: null });
+    await local.close();
+    return { ok: !out.ok && /icône/.test(out.error) && !out.tempId, detail: out.error };
+  });
+  await test('refus : débogueur refusé', async () => {
+    const opened = await originPage(context, sw, base);
+    await sw.evaluate(() => {
+      self.realAttach = chrome.debugger.attach;
+      chrome.debugger.attach = () => Promise.reject(new Error('Another debugger is already attached to the tab'));
+    });
+    const stored = await storedCount(sw);
+    const id = await sw.evaluate((id) => self.captureTab(id, 'devices'), opened.tabId);
+    await sw.evaluate(() => {
+      chrome.debugger.attach = self.realAttach;
+    });
+    const noise = await silence(sw, opened.tabId);
+    const left = await sw.evaluate(() => self.leftovers());
+    await closeExtras(context);
+    await opened.page.close();
+    return { ok: !id && (await storedCount(sw)) === stored && /a refusé le débogueur/.test(noise.error ?? '') && left.tabs === 0, detail: noise.error };
+  });
+  await test('appareils : une boîte de dialogue de la page ne bloque pas la capture', async () => {
+    const { page: local, tabId: localId } = await openTab(context, sw, `${base}/device-probe.html?header=0`);
+    const out = await Promise.race([runEssai(sw, localId, { url: `${base}/device-probe.html?alert=1&h=1500`, only: 'telephone' }), sleep(40_000).then(() => ({ ok: false, error: 'bloquée au-delà de 40 s' }))]);
+    await local.close();
+    return { ok: out.ok, detail: out.error ?? `${out.seconds} s` };
+  });
+  await test('appareils : truncated posé au-delà de 100 000 points', async () => {
+    const { page: local, tabId: localId } = await openTab(context, sw, `${base}/device-probe.html?header=0`);
+    const out = await runEssai(sw, localId, { url: `${base}/device-probe.html?header=0&h=100600`, only: 'telephone', light: true });
+    await local.close();
+    const [device] = out.devices ?? [];
+    return { ok: out.ok && device.truncated === true && device.recordHeight <= 200_000, detail: out.error ?? `${device.recordHeight} px, ${device.sliceCount} tranches, ${out.seconds} s` };
+  });
+
+  await test('endormissement forcé en pleine capture : au réveil, plus d’onglet temporaire ni de fenêtre bloquée', async () => {
+    const opened = await originPage(context, sw, base);
+    const admin = await context.newPage();
+    await admin.goto(`chrome-extension://${new URL(sw.url()).host}/popup/popup.html`);
+    await startDevices(sw, opened.tabId);
+    const { tempId } = await waitCapturing(sw, firstImage);
+    const cdp = await context.newCDPSession(admin);
+    const stopped = new Promise((resolve) => {
+      cdp.on('ServiceWorker.workerVersionUpdated', ({ versions }) => {
+        if (versions.some((version) => version.runningStatus === 'stopped')) resolve(true);
+      });
+    });
+    await cdp.send('ServiceWorker.enable');
+    await cdp.send('ServiceWorker.stopAllWorkers');
+    const asleep = await Promise.race([stopped, sleep(5000).then(() => false)]);
+    await cdp.detach();
+    await admin.reload();
+    await admin.waitForSelector('#cancel:not([hidden])', { timeout: 5000 });
+    await admin.click('#cancel');
+    await admin.waitForFunction(() => document.getElementById('status').hidden, null, { timeout: 5000 });
+    await sleep(800);
+    const state = await admin.evaluate(async (tempId) => ({
+      temp: Boolean(await chrome.tabs.get(tempId).catch(() => null)),
+      capturing: (await chrome.storage.session.get('capturing')).capturing ?? null,
+    }), tempId);
+    await admin.close();
+    await opened.page.close();
+    return { ok: asleep && !state.temp && !state.capturing, detail: `worker arrêté : ${asleep} ; ${JSON.stringify(state)}` };
+  });
   await page.close();
 }
 
@@ -418,13 +740,22 @@ async function groupLong(context, sw, env) {
       await sleep(2000);
     }
   })();
-  const out = await runEssai(sw, tabId, { light: true });
+  // Par le vrai chemin : les trois images s'écrivent en base, puis la page de résultats s'ouvre.
+  const started = Date.now();
+  const id = await sw.evaluate((tabId) => self.captureTab(tabId, 'devices'), tabId);
+  const seconds = Math.round((Date.now() - started) / 100) / 10;
+  await sleep(5000);
   done = true;
   await sampler;
-  await report('long', { ...out, peak });
-  await test('long : moins de 2,5 Go au total sur 100 000 points', async () => ({
-    ok: out.ok && peak > 0 && peak < 2500,
-    detail: `${Math.round(peak)} Mo, ${out.seconds} s ; ${(out.devices ?? []).map(({ device, sliceCount, bytes }) => `${device} ${sliceCount} tranches ${Math.round(bytes / 1024 / 1024)} Mo`).join(', ')} ${out.error ?? ''}`,
+  const group = id ? await sw.evaluate(async (id) => {
+    const all = await self.listCapturesForTest();
+    const groupId = all.find((capture) => capture.id === id).group.id;
+    return all.filter((capture) => capture.group?.id === groupId).map(({ group, slices }) => ({ device: group.device, sliceCount: slices.length, bytes: slices.reduce((sum, slice) => sum + slice.blob.size, 0) }));
+  }, id) : [];
+  await report('long', { id, seconds, peak, group });
+  await test('long : moins de 2,5 Go au total sur 100 000 points, écriture en base comprise', async () => ({
+    ok: Boolean(id) && peak > 0 && peak < 2500,
+    detail: `${Math.round(peak)} Mo, ${seconds} s ; ${group.map(({ device, sliceCount, bytes }) => `${device} ${sliceCount} tranches ${Math.round(bytes / 1024 / 1024)} Mo`).join(', ')}`,
   }));
   await page.close();
 }
@@ -532,9 +863,9 @@ async function main() {
   await fs.mkdir(WORK, { recursive: true });
   const extension = await prepareExtension(WORK);
   const sansHotes = await prepareExtension(WORK, { allHosts: false });
-  // Le point d'entrée de l'essai n'existe que dans les copies de test : la vraie extension n'a ni bouton ni appel.
+  // Ces points d'entrée n'existent que dans les copies de test.
   for (const copy of [extension, sansHotes]) {
-    await fs.appendFile(path.join(copy, 'background.js'), `\nimport { captureDevices as captureDevicesForTest, DevicesCancelled } from './devices/devices.js';\nself.captureDevicesForTest = captureDevicesForTest;\nself.DevicesCancelled = DevicesCancelled;\n`);
+    await fs.appendFile(path.join(copy, 'background.js'), `\nimport * as devicesForTest from './devices/devices.js';\nimport { listCaptures as listCapturesForTest } from './lib/db.js';\nself.captureDevicesForTest = devicesForTest.shootDevices;\nself.DevicesForTest = devicesForTest.DEVICES;\nself.DevicesCancelled = devicesForTest.DevicesCancelled;\nself.listCapturesForTest = listCapturesForTest;\n`);
   }
   const env = await servers();
   if (ONLY === 'direct') {
@@ -544,7 +875,7 @@ async function main() {
     console.log(`\n${results.length - failed}/${results.length} vérifications réussies`);
     process.exit(failed ? 1 : 0);
   }
-  const groups = { essai: groupEssai, scenarios: groupScenarios, reelle: groupReelle, site: groupSite, long: groupLong, visible: groupVisible };
+  const groups = { essai: groupEssai, scenarios: groupScenarios, reelle: groupReelle, appareils: groupAppareils, site: groupSite, long: groupLong, visible: groupVisible };
   const onDemand = new Set(['site', 'long', 'visible']);
   try {
     for (const [name, group] of Object.entries(groups)) {

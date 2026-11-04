@@ -24,6 +24,17 @@
       const total = Number(params.get('h') ?? 5000);
       document.getElementById('filler').style.height = `${total - 400}px`;
       if (params.get('header') !== '0') document.body.insertAdjacentHTML('beforeend', '<div id="header"></div>');
+      // Une boîte de dialogue au chargement : la capture ne doit pas rester bloquée dessus.
+      if (params.has('alert')) alert('Bonjour');
+      // Ce que le site voit, envoyé au serveur de test : la capture passe alors par son vrai chemin, sans crochet.
+      if (params.has('beacon')) {
+        addEventListener('load', () =>
+          fetch('/measure', {
+            method: 'POST',
+            body: JSON.stringify({ innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth, maxTouchPoints: navigator.maxTouchPoints, userAgent: navigator.userAgent, dpr: devicePixelRatio }),
+          }),
+        );
+      }
       if (params.has('dense')) {
         // Du grain de type photo sur toute la hauteur, pour peser comme une vraie page lourde.
         const grain = document.createElement('canvas');
