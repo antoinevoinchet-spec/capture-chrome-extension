@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Page témoin des appareils</title>
+    <style>
+      html, body { margin: 0; background: #fff; font: 16px sans-serif; }
+      /* Le marqueur de largeur se lit sur l'image : rouge téléphone, vert tablette, bleu ordinateur. */
+      #marker { height: 200px; background: rgb(0, 0, 255); }
+      @media (max-width: 600px) { #marker { background: rgb(255, 0, 0); } }
+      @media (min-width: 601px) and (max-width: 1000px) { #marker { background: rgb(0, 255, 0); } }
+      #header { position: fixed; top: 0; left: 0; right: 0; height: 40px; background: rgb(255, 0, 170); }
+      #filler { background: repeating-linear-gradient(#eee 0 100px, #ddd 100px 200px); }
+      #lazy { display: block; width: 100%; height: 200px; }
+    </style>
+  </head>
+  <body>
+    <div id="marker"></div>
+    <div id="filler"></div>
+    <img id="lazy" loading="lazy" alt="" src="lazy.png" />
+    <script>
+      const params = new URLSearchParams(location.search);
+      const total = Number(params.get('h') ?? 5000);
+      document.getElementById('filler').style.height = `${total - 400}px`;
+      if (params.get('header') !== '0') document.body.insertAdjacentHTML('beforeend', '<div id="header"></div>');
+      if (params.has('dense')) {
+        // Du grain de type photo sur toute la hauteur, pour peser comme une vraie page lourde.
+        const grain = document.createElement('canvas');
+        grain.width = 1024;
+        grain.height = 1024;
+        const grainCtx = grain.getContext('2d');
+        const pixels = grainCtx.createImageData(1024, 1024);
+        let seed = 12345;
+        for (let i = 0; i < pixels.data.length; i += 4) {
+          for (let c = 0; c < 3; c++) {
+            seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+            pixels.data[i + c] = 96 + ((seed >> 16) & 63);
+          }
+          pixels.data[i + 3] = 255;
+        }
+        grainCtx.putImageData(pixels, 0, 0);
+        document.getElementById('filler').style.background = `url(${grain.toDataURL('image/png')})`;
+      }
+    </script>
+  </body>
+</html>

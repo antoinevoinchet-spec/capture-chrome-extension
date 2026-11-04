@@ -32,7 +32,7 @@ export function check(name, ok, detail = '') {
 // Ce que le vrai manifeste doit dire à ce lot. Mis à jour en même temps que lui : les suites de tous les lots le lisent.
 export const MANIFEST_EXPECTED = {
   version: '0.4.0',
-  permissions: ['activeTab', 'scripting', 'downloads', 'storage', 'contextMenus', 'offscreen'],
+  permissions: ['activeTab', 'scripting', 'downloads', 'storage', 'contextMenus', 'offscreen', 'debugger'],
   optional_host_permissions: ['http://*/*', 'https://*/*'],
 };
 

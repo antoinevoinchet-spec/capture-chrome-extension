@@ -3,7 +3,7 @@
   "name": "Capture",
   "version": "0.4.0",
   "description": "Capture la page entière en haute résolution et la découpe automatiquement en plusieurs images nettes.",
-  "permissions": ["activeTab", "scripting", "downloads", "storage", "contextMenus", "offscreen"],
+  "permissions": ["activeTab", "scripting", "downloads", "storage", "contextMenus", "offscreen", "debugger"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",
