@@ -1,5 +1,5 @@
 // Tests du lot 4 : téléphone, tablette, ordinateur.
-// Usage : node lot4.mjs <dossier de sortie> [essai|scenarios|site|long|visible|direct] [motif]
+// Usage : node lot4.mjs <dossier de sortie> [essai|scenarios|reelle|site|long|visible|direct] [motif]
 // `site` (un vrai site, dont l'adresse est obligatoire dans SITE_URL), `long` (100 000 points), `visible` et `direct` (une vraie fenêtre) ne tournent que si on les nomme.
 
 import { chromium } from 'playwright';
@@ -316,6 +316,22 @@ async function groupScenarios(context, sw, env) {
   });
 }
 
+// --- La vraie extension, sans accès aux sites ---
+
+async function groupReelle(context, sw, env) {
+  console.log('\n— La vraie extension, sans accès aux sites');
+  const { base } = env;
+  const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?origin=1`);
+  const hosts = await sw.evaluate(() => chrome.permissions.contains({ origins: ['http://*/*'] }));
+  const out = await runEssai(sw, tabId, { url: `${base}/device-probe.html` });
+  await report('reelle', out);
+  await test('vraie extension : le débogueur suffit, sans accès aux sites', async () => ({
+    ok: hosts === false && out.ok && out.devices[0].width === 780 && out.devices[1].width === 1640 && near(out.devices[0].marker, [255, 0, 0]) && near(out.devices.at(-1).bottom, LAZY_COLOR),
+    detail: `hôtes ${hosts} ; ${out.error ?? out.devices.map(({ width }) => width).join(' ')}`,
+  }));
+  await page.close();
+}
+
 // --- Un vrai site ---
 
 async function groupSite(context, sw) {
@@ -338,6 +354,28 @@ async function groupSite(context, sw) {
       return { ok: same(before, after) && !out.tempLeft && !out.targetLeft, detail: after.href };
     });
     await page.close();
+  }
+  // Les sorties anormales, sur le vrai site.
+  for (const [label, opts] of [
+    ['annulation', { scenario: 'cancel' }],
+    ['onglet temporaire fermé', { scenario: 'close-temp' }],
+    ['détachement forcé', { scenario: 'detach' }],
+    ['erreur', { url: 'http://127.0.0.1:9/mort' }],
+  ]) {
+    for (let trial = 1; trial <= 3; trial++) {
+      const { page, tabId } = await openTab(context, sw, SITE_URL);
+      await page.evaluate(() => document.body.insertAdjacentHTML('afterbegin', '<input id="saisie" />'));
+      await page.fill('#saisie', 'texte saisi');
+      const before = await originState(page);
+      const out = await runEssai(sw, tabId, opts);
+      await report(`site ${label}-${trial}`, out);
+      const after = await originState(page);
+      await test(`site, sortie ${label} ${trial} : origine intacte, rien ne reste`, async () => ({
+        ok: !out.ok && same(before, after) && !out.tempLeft && !out.targetLeft,
+        detail: `${out.kind} (${out.seconds} s)`,
+      }));
+      await page.close();
+    }
   }
   for (let index = 0; index < 3; index++) {
     const { device, base64 } = await sw.evaluate((index) => self.composeRecord(index), index);
@@ -493,8 +531,11 @@ async function main() {
   await fs.rm(WORK, { recursive: true, force: true });
   await fs.mkdir(WORK, { recursive: true });
   const extension = await prepareExtension(WORK);
-  // Le point d'entrée de l'essai n'existe que dans la copie de test : la vraie extension n'a ni bouton ni appel.
-  await fs.appendFile(path.join(extension, 'background.js'), `\nimport { captureDevices as captureDevicesForTest, DevicesCancelled } from './devices/devices.js';\nself.captureDevicesForTest = captureDevicesForTest;\nself.DevicesCancelled = DevicesCancelled;\n`);
+  const sansHotes = await prepareExtension(WORK, { allHosts: false });
+  // Le point d'entrée de l'essai n'existe que dans les copies de test : la vraie extension n'a ni bouton ni appel.
+  for (const copy of [extension, sansHotes]) {
+    await fs.appendFile(path.join(copy, 'background.js'), `\nimport { captureDevices as captureDevicesForTest, DevicesCancelled } from './devices/devices.js';\nself.captureDevicesForTest = captureDevicesForTest;\nself.DevicesCancelled = DevicesCancelled;\n`);
+  }
   const env = await servers();
   if (ONLY === 'direct') {
     await groupSansPlaywright(extension, env);
@@ -503,7 +544,7 @@ async function main() {
     console.log(`\n${results.length - failed}/${results.length} vérifications réussies`);
     process.exit(failed ? 1 : 0);
   }
-  const groups = { essai: groupEssai, scenarios: groupScenarios, site: groupSite, long: groupLong, visible: groupVisible };
+  const groups = { essai: groupEssai, scenarios: groupScenarios, reelle: groupReelle, site: groupSite, long: groupLong, visible: groupVisible };
   const onDemand = new Set(['site', 'long', 'visible']);
   try {
     for (const [name, group] of Object.entries(groups)) {
@@ -515,7 +556,7 @@ async function main() {
             viewport: null,
             args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--window-size=1280,900'],
           })
-        : await launch(extension, `profile-${name}`, WORK);
+        : await launch(name === 'reelle' ? sansHotes : extension, `profile-${name}`, WORK);
       try {
         const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
         await sw.evaluate(installHelpers);
