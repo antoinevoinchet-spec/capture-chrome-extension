@@ -104,39 +104,59 @@ async function emulate(send, device, origin) {
   await send('Emulation.setUserAgentOverride', { userAgent: navigator.userAgent });
 }
 
-// Attend la fin du chargement puis un réseau calme, sans dépasser leurs limites : une page dont une publicité ne finit jamais de charger se capture quand même.
-async function navigate(send, debuggee, url, watch) {
+// Suit le document de l'onglet temporaire : son adresse change-t-elle, son réseau est-il calme (500 ms sans requête, signalé par Chrome) ?
+function trackPage(debuggee) {
   const calm = new Set();
-  let wanted = null;
-  let settle;
-  const quiet = new Promise((resolve) => {
-    settle = resolve;
+  let loader = null;
+  let wake = null;
+  let loaded = null;
+  const page = {
+    moved: false,
+    // Le document attendu : celui de la navigation, ou celui d'une redirection arrivée entre-temps.
+    follow: (loaderId) => {
+      loader = loaderId;
+      if (calm.has(loader)) wake?.();
+    },
+    quiet: () =>
+      new Promise((resolve) => {
+        wake = resolve;
+        if (calm.has(loader)) resolve();
+      }),
+    nextLoad: () =>
+      new Promise((resolve) => {
+        loaded = resolve;
+      }),
+    dispose: () => chrome.debugger.onEvent.removeListener(onEvent),
+  };
+  const onEvent = (source, method, params) => {
+    if (source.tabId !== debuggee.tabId) return;
+    if (method === 'Page.loadEventFired') loaded?.();
+    if (method === 'Page.frameNavigated' && !params.frame.parentId) {
+      page.moved = true;
+      page.follow(params.frame.loaderId);
+    }
+    if (method === 'Page.lifecycleEvent' && params.name === 'networkIdle') {
+      calm.add(params.loaderId);
+      if (params.loaderId === loader) wake?.();
+    }
+  };
+  chrome.debugger.onEvent.addListener(onEvent);
+  return page;
+}
+
+// Attend la fin du chargement puis un réseau calme, sans dépasser leurs limites : une page dont une publicité ne finit jamais de charger se capture quand même.
+async function navigate(send, page, url, watch) {
+  const noAnswer = sleep(NAVIGATE_TIMEOUT_MS).then(() => {
+    throw new DevicesError("La page ne répond pas. Si elle demande un mot de passe, connecte-toi d'abord dans cet onglet, puis relance la capture.");
   });
-  let onEvent;
-  const loaded = new Promise((resolve) => {
-    onEvent = (source, method, params) => {
-      if (source.tabId !== debuggee.tabId) return;
-      if (method === 'Page.loadEventFired') resolve();
-      if (method === 'Page.lifecycleEvent' && params.name === 'networkIdle') {
-        calm.add(params.loaderId);
-        if (params.loaderId === wanted) settle();
-      }
-    };
-    chrome.debugger.onEvent.addListener(onEvent);
-  });
-  try {
-    const noAnswer = sleep(NAVIGATE_TIMEOUT_MS).then(() => {
-      throw new DevicesError("La page ne répond pas. Si elle demande un mot de passe, connecte-toi d'abord dans cet onglet, puis relance la capture.");
-    });
-    const { errorText, loaderId } = await watch.race(Promise.race([send('Page.navigate', { url }), noAnswer]));
-    if (errorText) throw new DevicesError(`La page ne s'est pas chargée (${errorText}). Vérifie l'adresse et relance la capture.`);
-    wanted = loaderId;
-    if (calm.has(wanted)) settle();
-    await watch.race(Promise.race([loaded, sleep(LOAD_TIMEOUT_MS)]));
-    await watch.race(Promise.race([quiet, sleep(QUIET_TIMEOUT_MS)]));
-  } finally {
-    chrome.debugger.onEvent.removeListener(onEvent);
-  }
+  const load = page.nextLoad().then(() => true);
+  const { errorText, loaderId } = await watch.race(Promise.race([send('Page.navigate', { url }), noAnswer]));
+  if (errorText) throw new DevicesError(`La page ne s'est pas chargée (${errorText}). Vérifie l'adresse et relance la capture.`);
+  // Déjà suivi si une redirection est arrivée avant cette réponse.
+  if (!page.moved) page.follow(loaderId);
+  const inTime = await watch.race(Promise.race([load, sleep(LOAD_TIMEOUT_MS).then(() => false)]));
+  // Pas de load dans le temps : le réseau ne sera pas calme non plus, inutile d'attendre encore.
+  if (inTime) await watch.race(Promise.race([page.quiet(), sleep(QUIET_TIMEOUT_MS)]));
 }
 
 // Une page peut encore se charger après une redirection par script. Rend la main dès qu'elle est prête, sans dépasser LOAD_TIMEOUT_MS.
@@ -162,41 +182,40 @@ function closeDialogs(debuggee, send) {
 }
 
 // Une page qui change d'adresse pendant la capture (redirection par script, <meta refresh>) : les images seraient celles de deux pages.
-// On recommence une fois sur la page d'arrivée ; si elle bouge encore, on le dit.
-async function shootStable(send, debuggee, device, watch, onProgress) {
-  let moved = false;
-  const onEvent = (source, method, params) => {
-    if (source.tabId === debuggee.tabId && method === 'Page.frameNavigated' && !params.frame.parentId) moved = true;
-  };
-  chrome.debugger.onEvent.addListener(onEvent);
-  try {
-    for (let attempt = 0; ; attempt++) {
+// On recommence une fois sur la page d'arrivée, une fois celle-ci chargée et son réseau calme ; si elle bouge encore, on le dit.
+async function shootStable(send, page, device, watch, onProgress) {
+  for (let attempt = 0; ; attempt++) {
+    if (attempt) {
       await waitComplete(send, watch);
-      if (attempt) await watch.race(sleep(500));
-      moved = false;
-      let record = null;
-      let failure = null;
-      try {
-        record = await shoot(send, device, watch, onProgress);
-      } catch (err) {
-        if (err instanceof DevicesCancelled || err instanceof DevicesError) throw err;
-        failure = err;
-      }
-      if (!moved && !PAGE_GONE.test(String(failure?.message))) {
-        if (failure) throw failure;
-        return record;
-      }
-      if (attempt) throw new DevicesError(PAGE_MOVING);
+      await watch.race(Promise.race([page.quiet(), sleep(QUIET_TIMEOUT_MS)]));
     }
-  } finally {
-    chrome.debugger.onEvent.removeListener(onEvent);
+    page.moved = false;
+    let record = null;
+    let failure = null;
+    try {
+      record = await shoot(send, device, watch, onProgress);
+    } catch (err) {
+      if (err instanceof DevicesCancelled || err instanceof DevicesError) throw err;
+      failure = err;
+    }
+    if (!page.moved && !PAGE_GONE.test(String(failure?.message))) {
+      if (failure) throw failure;
+      return record;
+    }
+    if (attempt) throw new DevicesError(PAGE_MOVING);
   }
 }
 
 async function shoot(send, device, watch, onProgress) {
+  // Contenu plus large que le téléphone : la page est dézoomée pour tenir, comme sans initial-scale. Sinon la prise de vue ne montrerait qu'une partie de ce que la page annonce.
+  if (device.mobile) {
+    const wide = await watch.race(send('Runtime.evaluate', { expression: 'innerWidth', returnByValue: true }));
+    if (wide.result.value > device.width) await watch.race(send('Emulation.setPageScaleFactor', { pageScaleFactor: device.width / wide.result.value }));
+  }
   const info = await watch.race(evaluate(send, pagePrepare, [PAGE_OPTIONS]));
   const positions = [];
-  for (let y = 0; ; y += info.sliceH) {
+  // Deux points de recouvrement : à une échelle non entière (page dézoomée, zoom du navigateur), l'arrondi laisserait sinon une ligne vide entre deux tranches.
+  for (let y = 0; ; y += Math.max(1, info.sliceH - 2)) {
     if (y + info.sliceH >= info.totalH) {
       positions.push(Math.max(0, info.totalH - info.sliceH));
       break;
@@ -220,11 +239,11 @@ async function shoot(send, device, watch, onProgress) {
     onProgress?.({ done: i + 1, total: positions.length });
   }
 
-  // Page plus large que l'écran sur un mobile : le navigateur dézoome, et toute sa largeur est sur l'image. On la garde.
+  // Page dézoomée sur un mobile : toute sa largeur est sur l'image, et clip.w ne la voit pas. Une zone défilante garde sa propre coupe.
   const crop = {
     x: Math.round(info.clip.x * scale),
     y: Math.round(info.clip.y * scale),
-    w: Math.round((device.mobile ? info.innerW : info.clip.w) * scale),
+    w: Math.round((device.mobile && info.scroller === 'window' ? info.innerW : info.clip.w) * scale),
     h: Math.round(info.clip.h * scale),
   };
   await watch.race(evaluate(send, pageRestore, [])).catch(() => {});
@@ -264,6 +283,7 @@ export async function shootDevices(origin, options = {}) {
   const watch = watchStop(origin, temp, debuggee);
   const send = (method, params = {}) => chrome.debugger.sendCommand(debuggee, method, params);
   const stopClosingDialogs = closeDialogs(debuggee, send);
+  const page = trackPage(debuggee);
   let attached = false;
   try {
     await onStart?.({ tempId: temp.id, halt: watch.halt });
@@ -288,9 +308,10 @@ export async function shootDevices(origin, options = {}) {
       // Repartir d'une page vide : avec un # dans l'adresse, Chrome ne rechargerait pas la page, et le site ne verrait pas le nouvel appareil.
       if (index) await watch.race(send('Page.navigate', { url: 'about:blank' }));
       await watch.race(emulate(send, device, origin));
-      await navigate(send, debuggee, origin.url, watch);
+      page.moved = false;
+      await navigate(send, page, origin.url, watch);
       const measure = afterLoad ? await watch.race(afterLoad(send, device)) : null;
-      const record = await shootStable(send, debuggee, device, watch, (slice) => onProgress?.({ ...step, ...slice }));
+      const record = await shootStable(send, page, device, watch, (slice) => onProgress?.({ ...step, ...slice }));
       // Une seule date par groupe : ses fichiers vont dans un seul dossier.
       record.createdAt = createdAt;
       record.group = { ...group, device: device.key };
@@ -302,6 +323,7 @@ export async function shootDevices(origin, options = {}) {
   } finally {
     watch.dispose();
     stopClosingDialogs();
+    page.dispose();
     if (attached) await chrome.debugger.detach(debuggee).catch(() => {});
     await chrome.tabs.remove(temp.id).catch(() => {});
   }

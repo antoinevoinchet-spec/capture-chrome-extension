@@ -2,13 +2,30 @@
 <html lang="fr">
   <head>
     <meta charset="utf-8" />
-    <!-- Sans initial-scale, et un contenu plus large que le téléphone : le navigateur dézoome pour tout montrer. -->
+    <!-- Contenu de 600 points sur un téléphone de 390. Sans initial-scale, le navigateur dézoome ; ?initial=1 l'ajoute, comme presque tous les sites. -->
     <meta name="viewport" content="width=device-width" />
+    <script>
+      if (new URLSearchParams(location.search).has('initial')) document.querySelector('meta[name=viewport]').content = 'width=device-width, initial-scale=1';
+    </script>
     <title>Page trop large</title>
     <style>
       html, body { margin: 0; background: #fff; }
-      #wide { width: 600px; height: 3000px; background: linear-gradient(90deg, #eee 0 590px, rgb(200, 0, 200) 590px 600px); }
+      #wide { position: relative; width: 600px; }
+      .band { height: 100px; }
+      #edge { position: absolute; top: 0; bottom: 0; left: 590px; width: 10px; background: rgb(200, 0, 200); }
     </style>
   </head>
-  <body><div id="wide"></div></body>
+  <body>
+    <div id="wide"><div id="edge"></div></div>
+    <script>
+      // Une couleur par bande de 100 points : un morceau de page manquant se lit sur l'image.
+      const wide = document.getElementById('wide');
+      for (let i = 0; i < 50; i++) {
+        const band = document.createElement('div');
+        band.className = 'band';
+        band.style.background = `rgb(${(i * 37) % 256}, ${(i * 91) % 256}, 128)`;
+        wide.append(band);
+      }
+    </script>
+  </body>
 </html>

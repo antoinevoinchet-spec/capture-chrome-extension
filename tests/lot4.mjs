@@ -181,6 +181,7 @@ function installHelpers() {
       scale,
       sliceCount: slices.length,
       crop,
+      scroller: record.scroller,
       title: record.title,
       url: record.url,
       truncated: record.truncated,
@@ -193,6 +194,31 @@ function installHelpers() {
     };
   };
   self.summaryOf = summary;
+  // L'image assemblée d'un appareil contient-elle toutes les bandes de device-wide.html, sans ligne vide ni morceau perdu ?
+  self.bandsOf = async (record, points) => {
+    const canvas = new OffscreenCanvas(record.width, Math.min(record.height, 16000));
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    for (const slice of record.slices) {
+      if (slice.y >= canvas.height) break;
+      const bmp = await createImageBitmap(slice.blob);
+      const { x, y, w, h } = record.crop;
+      ctx.drawImage(bmp, x, y, w, h, 0, slice.y, w, h);
+      bmp.close();
+    }
+    const perPoint = record.height / points;
+    const column = ctx.getImageData(Math.round(record.width * 0.1), 0, 1, canvas.height).data;
+    let wrong = 0;
+    let blank = 0;
+    for (let row = 0; row < canvas.height; row++) {
+      if (column[row * 4 + 3] < 255) blank++;
+      const place = row / perPoint;
+      if (place % 100 < 3 || place % 100 > 97) continue;
+      const i = Math.floor(place / 100);
+      if (Math.abs(column[row * 4] - (i * 37) % 256) > 16 || Math.abs(column[row * 4 + 1] - (i * 91) % 256) > 16) wrong++;
+    }
+    const edge = ctx.getImageData(canvas.width - 3, 40, 1, 1).data;
+    return { width: record.width, height: record.height, sliceCount: record.slices.length, crop: record.crop, firstY: record.slices.slice(0, 3).map(({ y }) => y), wrong, blank, edge: [...edge].slice(0, 3), rows: canvas.height };
+  };
   self.runEssai = async (tabId, opts = {}) => {
     const real = await chrome.tabs.get(tabId);
     const origin = 'url' in opts ? { ...real, url: opts.url } : real;
@@ -201,8 +227,9 @@ function installHelpers() {
     let halt = null;
     let fired = false;
     const onProgress = async ({ done }) => {
-      if (fired || !opts.scenario || !done) return;
+      if (fired || !opts.scenario || (!done && !opts.early)) return;
       fired = true;
+      if (opts.early) await new Promise((resolve) => setTimeout(resolve, opts.early));
       if (opts.scenario === 'cancel') halt(new self.DevicesCancelled('user'));
       if (opts.scenario === 'close-temp') await chrome.tabs.remove(tempId);
       if (opts.scenario === 'close-origin') await chrome.tabs.remove(tabId);
@@ -532,7 +559,7 @@ async function groupAppareils(context, sw, env) {
     detail: JSON.stringify([cancelled, closed].map(({ id, added, noise }) => ({ id, added, noise }))),
   }));
   await test('détachement forcé : message en français qui dit quoi faire', async () => ({
-    ok: !detached.id && detached.added === 0 && /débogueur/.test(detached.noise.error ?? '') && /Relance/.test(detached.noise.error ?? '') && !/Debugger/.test(detached.noise.error ?? ''),
+    ok: !detached.id && detached.added === 0 && /débogueur/.test(detached.noise.error ?? '') && /relance/i.test(detached.noise.error ?? '') && !/Debugger/.test(detached.noise.error ?? ''),
     detail: detached.noise.error,
   }));
   await test('erreur de chargement : message en français qui dit quoi faire, aucune capture', async () => ({
@@ -795,6 +822,17 @@ async function groupGroupe(context, sw, env) {
 
   await test('groupe : chaque onglet a ses boutons et son annotation', async () => {
     // Un vrai rectangle, tracé dans l'éditeur ouvert depuis l'onglet Tablette.
+    // Le marqueur du téléphone est rouge lui aussi : son compte ne doit simplement pas changer.
+    const reddish = () => viewer.evaluate(() => {
+      const canvas = document.querySelector('figure.part .sheet canvas');
+      const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+      let found = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i] > 180 && data[i + 1] < 90 && data[i + 2] < 90) found++;
+      return found;
+    });
+    await showTab(viewer, 'Téléphone');
+    const phoneBefore = await reddish();
+    await showTab(viewer, 'Tablette');
     await viewer.locator('figure.part .annotate').first().click();
     await viewer.waitForSelector('#editor:not([hidden])');
     const stage = await viewer.locator('#editor-scroll').boundingBox();
@@ -821,18 +859,10 @@ async function groupGroupe(context, sw, env) {
       await sleep(250);
       kinds = await counts();
     }
-    const reddish = () => viewer.evaluate(() => {
-      const canvas = document.querySelector('figure.part .sheet canvas');
-      const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
-      let found = 0;
-      for (let i = 0; i < data.length; i += 4) if (data[i] > 180 && data[i + 1] < 90 && data[i + 2] < 90) found++;
-      return found;
-    });
     const red = {};
     const buttons = [];
     for (const label of ['Téléphone', 'Tablette', 'Ordinateur']) {
       await showTab(viewer, label);
-      // Le marqueur du téléphone est rouge lui aussi : il n'est compté que sur la bande sous le marqueur, ici comparée à la tablette.
       red[label] = await reddish();
       buttons.push(await viewer.evaluate(() => [...document.querySelector('figure.part .part-actions').querySelectorAll('button')].map((el) => el.textContent).join()));
     }
@@ -844,7 +874,7 @@ async function groupGroupe(context, sw, env) {
       const db = await import(chrome.runtime.getURL('lib/db.js'));
       await db.saveAnnotations(id, []);
     }, ids[1]);
-    return { ok: same(kinds, [0, 1, 0]) && mark === 'annotée' && buttons.every((row) => row === 'Copier,Télécharger,Annoter') && red.Tablette > 0 && red.Ordinateur === 0, detail: `${kinds} ; ${mark} ; rouge ${JSON.stringify(red)} ; ${buttons[0]} ; éditeur ${editorWidth}` };
+    return { ok: same(kinds, [0, 1, 0]) && mark === 'annotée' && buttons.every((row) => row === 'Copier,Télécharger,Annoter') && red.Tablette > 0 && red.Ordinateur === 0 && red.Téléphone === phoneBefore, detail: `${kinds} ; ${mark} ; rouge ${JSON.stringify(red)} ; ${buttons[0]} ; éditeur ${editorWidth}` };
   });
 
   await test('groupe : noms de fichiers et dossier', async () => {
@@ -1031,22 +1061,81 @@ async function groupRelecture(context, sw, env) {
     const [telephone, tablette] = group.devices;
     return { ok: widths[0] === 390 && widths[1] === 820 && telephone?.recordWidth === 780 && tablette?.recordWidth === 1640 && near(telephone?.marker, [255, 0, 0]) && Math.abs(zoom - 1.1) < 0.01, detail: `${widths} ; ${group.devices.map(({ recordWidth }) => recordWidth)} ; zoom ${zoom}` };
   });
-  await test('page plus large que le téléphone : toute sa largeur est sur l’image, en 780 px', async () => {
-    const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?header=0&h=600`);
-    const out = await runEssai(sw, tabId, { url: `${base}/device-wide.html`, only: 'telephone', keep: true });
-    await page.close();
-    const [device] = out.devices ?? [];
-    if (!out.ok) return { ok: false, detail: out.error };
-    const edge = await sw.evaluate(async () => {
-      const record = self.lastRecords[0];
-      const bmp = await createImageBitmap(record.slices[0].blob);
-      const canvas = new OffscreenCanvas(1, 1);
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(bmp, record.crop.x + record.crop.w - 3, 40, 1, 1, 0, 0, 1, 1);
-      bmp.close();
-      return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+  for (const [label, address] of [
+    ['dézoomée par le navigateur', '/device-wide.html'],
+    ['avec initial-scale=1', '/device-wide.html?initial=1'],
+  ]) {
+    await test(`page plus large que le téléphone, ${label} : aucune bande perdue, ni ligne vide`, async () => {
+      const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?header=0&h=600`);
+      const out = await runEssai(sw, tabId, { url: `${base}${address}`, only: 'telephone', keep: true });
+      await page.close();
+      if (!out.ok) return { ok: false, detail: out.error };
+      const [device] = out.devices;
+      const bands = await sw.evaluate(() => self.bandsOf(self.lastRecords[0], 5000));
+      await report(`large ${label}`, { measure: device.measure, bands });
+      return { ok: bands.width === 780 && bands.wrong === 0 && bands.blank === 0, detail: `${device.measure.innerWidth}×${device.measure.innerHeight} points, ${JSON.stringify(bands)}` };
     });
-    return { ok: device.recordWidth === 780 && device.crop.w === device.width && near(edge, [200, 0, 200]), detail: `largeur ${device.recordWidth}, coupe ${device.crop.w}/${device.width}, ${device.measure.innerWidth} points de large ; bord droit ${edge}` };
+  }
+  await test('page à zone défilante sur tablette : pas de bande vide à côté de la colonne', async () => {
+    const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?header=0&h=600`);
+    const out = await runEssai(sw, tabId, { url: `${base}/app.html`, only: 'tablette', keep: true });
+    await page.close();
+    if (!out.ok) return { ok: false, detail: out.error };
+    const { crop, width, scroller } = out.devices[0];
+    return { ok: scroller === 'element' && crop.x > 0 && crop.x + crop.w <= width, detail: `coupe ${JSON.stringify(crop)} dans ${width} px ; ${scroller}` };
+  });
+  await test('zoom de 110 % : ordinateur sans ligne vide entre deux tranches', async () => {
+    const { page, tabId } = await openTab(context, sw, `${base}/device-wide.html`);
+    await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1.1), tabId);
+    await sleep(300);
+    const out = await runEssai(sw, tabId, { only: 'ordinateur', keep: true });
+    await sw.evaluate((tabId) => chrome.tabs.setZoom(tabId, 1), tabId);
+    await page.close();
+    if (!out.ok) return { ok: false, detail: out.error };
+    const bands = await sw.evaluate(() => self.bandsOf(self.lastRecords[0], 5000));
+    return { ok: bands.wrong === 0 && bands.blank === 0, detail: JSON.stringify(bands) };
+  });
+  await test('chargement : une image qui ne répond jamais coûte 15 s par appareil au plus', async () => {
+    const out = await hook('/device-probe.html?header=0&h=1500&hangimg=1');
+    return { ok: out.ok && out.seconds <= 22, detail: out.error ?? `${out.seconds} s` };
+  });
+  await test('redirection par script : le contenu chargé après l’arrivée est sur l’image', async () => {
+    const out = await hook('/device-probe.html?jsredirect=900&keep=late');
+    const [device] = out.devices ?? [];
+    return { ok: out.ok && /late=1500/.test(device.url) && near(device.bottom, [10, 200, 200]), detail: out.error ?? `${device.bottom} ; ${device.url}` };
+  });
+  await test('redirection pendant l’attente du réseau calme : le contenu d’arrivée est aussi là', async () => {
+    const out = await hook('/device-probe.html?jsredirect=100&keep=late');
+    const [device] = out.devices ?? [];
+    return { ok: out.ok && /late=1500/.test(device.url) && near(device.bottom, [10, 200, 200]), detail: out.error ?? `${device.bottom} ; ${out.seconds} s` };
+  });
+  // Un détachement fait par l'extension elle-même ne déclenche pas onDetach : il se voit à la commande suivante, après le réseau calme. Celui de Chrome répond aussitôt.
+  for (const [label, scenario, limit] of [['annuler', 'cancel', 4], ['fermer l’onglet temporaire', 'close-temp', 4], ['couper le débogueur', 'detach', 8]]) {
+    await test(`pendant l’attente du réseau : ${label} ne fige rien, rien ne reste`, async () => {
+      const out = await hook('/device-probe.html?header=0&h=1500&late=4000', { scenario, early: 1500 });
+      return { ok: !out.ok && out.seconds <= limit && !out.tempLeft && !out.targetLeft, detail: `${out.kind} ; ${out.seconds} s` };
+    });
+  }
+  await test('annuler pendant l’écriture en base, par le vrai chemin : rien ne reste, aucune page de résultats', async () => {
+    const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?header=0&h=1500`);
+    const stored = await storedCount(sw);
+    const id = await sw.evaluate(async (tabId) => {
+      // Dernière image du dernier appareil prise : plus rien n'arrête les prises de vue, seule l'écriture reste.
+      const onChange = (changes) => {
+        const state = changes.capturing?.newValue;
+        if (state?.index === state?.count - 1 && state?.total && state?.done === state?.total) self.cancelCaptureForTest();
+      };
+      chrome.storage.onChanged.addListener(onChange);
+      try {
+        return await self.captureTab(tabId, 'devices');
+      } finally {
+        chrome.storage.onChanged.removeListener(onChange);
+      }
+    }, tabId);
+    const viewers = context.pages().filter((other) => other.url().includes('/viewer/viewer.html')).length;
+    const noise = await silence(sw, tabId);
+    await page.close();
+    return { ok: !id && (await storedCount(sw)) === stored && viewers === 0 && !noise.error, detail: JSON.stringify({ id, viewers, noise }) };
   });
   await test('annuler pendant l’écriture en base : rien ne reste', async () => {
     const { page, tabId } = await openTab(context, sw, `${base}/device-probe.html?header=0&h=1500`);
