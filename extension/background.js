@@ -277,20 +277,36 @@ async function captureRegion(tab, pick) {
     for (let i = 0; i < offsets.length; i++) {
       if (cancelled) throw new CaptureCancelled();
       const wanted = region.still ? region.start : region.top + offsets[i];
-      let actual = await inTab(tab.id, pageScrollTo, [wanted, true]);
-      let live = await inTab(tab.id, pageRegionRect, []);
+      let actual;
+      let live;
       // Sa place sur l'écran : tout en bas de la page, le défilement s'arrête avant d'amener le bloc en haut.
       const placed = () => (live ? live.top + region.skip + offsets[i] : clip.y + region.top + offsets[i] - actual);
       const offScreen = () => !region.still && (placed() < clip.y - 1 || placed() + region.band > clip.y + clip.h + 1);
-      // Du contenu est apparu au-dessus du bloc : on le rattrape une fois.
-      if (live && !live.gone && offScreen()) {
-        actual = await inTab(tab.id, pageScrollTo, [actual + placed() - clip.y, true]);
+      const aim = async () => {
+        actual = await inTab(tab.id, pageScrollTo, [wanted, true]);
         live = await inTab(tab.id, pageRegionRect, []);
+        // Du contenu est apparu au-dessus du bloc : on le rattrape une fois.
+        if (live && !live.gone && offScreen()) {
+          actual = await inTab(tab.id, pageScrollTo, [actual + placed() - clip.y, true]);
+          live = await inTab(tab.id, pageRegionRect, []);
+        }
+        if (live?.gone) throw new CaptureError(BLOCK_GONE);
+        if (offScreen() || (live && live.height < region.skip + offsets[i] + region.band - 2)) throw new CaptureError(PAGE_MOVED);
+      };
+      // Relu après la prise de vue : si le bloc a bougé entre les deux, la tranche est reprise une fois. Sur une animation continue, la seconde
+      // prise est gardée telle quelle : c'est une limite connue, pas une raison de refuser le site.
+      await aim();
+      let blob = await grab(tab);
+      let after = await inTab(tab.id, pageRegionRect, []);
+      if (live && after && (after.gone || Math.abs(after.top - live.top) > 1)) {
+        await aim();
+        blob = await grab(tab);
+        after = await inTab(tab.id, pageRegionRect, []);
       }
-      if (live?.gone) throw new CaptureError(BLOCK_GONE);
-      if (offScreen() || (live && live.height < region.skip + offsets[i] + region.band - 2)) throw new CaptureError(PAGE_MOVED);
+      if (after?.gone) throw new CaptureError(BLOCK_GONE);
+      if (after) live = after;
       const top = placed();
-      const bmp = await createImageBitmap(await grab(tab));
+      const bmp = await createImageBitmap(blob);
       if (!scale) {
         scale = bmp.width / info.innerW;
         const x = Math.round(region.left * scale);

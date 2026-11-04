@@ -53,6 +53,13 @@
       if (params.has('htmlscroll')) css('html { overflow-y: scroll; }');
       if (params.has('bodyhidden')) css('html, body { height: 100%; } body { overflow-x: hidden; }');
       if (params.has('snap')) css('html { scroll-snap-type: y mandatory; } #above, #outer, #below { scroll-snap-align: start; }');
+      if (params.has('backtop')) {
+        // Un bouton « retour en haut », affiché seulement après un peu de défilement.
+        add('<div id="backtop" style="display: none; position: fixed; left: 300px; bottom: 20px; width: 200px; height: 60px; background: #123456; z-index: 7"></div>');
+        addEventListener('scroll', () => (document.getElementById('backtop').style.display = scrollY > 1500 ? 'block' : 'none'));
+      }
+      // Chrome compense seul un contenu ajouté au-dessus de l'écran (ancrage du défilement), sauf si la page l'interdit.
+      if (params.has('noanchor')) css('* { overflow-anchor: none; }');
       if (params.has('snapsmall')) {
         // De petites sections : un défilement aligné tomberait à côté de presque toutes les tranches.
         css('html { scroll-snap-type: y mandatory; } .section { height: 600px; scroll-snap-align: start; }');

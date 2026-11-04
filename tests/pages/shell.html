@@ -13,6 +13,11 @@
   <body>
     <div id="shell"><main id="main"><div id="tall"></div></main></div>
     <script>
+      // Une zone principale aussi haute que la fenêtre, sous un en-tête : son bas sort de l'écran, même au bout de son défilement.
+      if (new URLSearchParams(location.search).has('overflow')) {
+        const shell = document.getElementById('shell');
+        shell.style.cssText = 'top: 64px; bottom: auto; height: 100vh; right: 0; left: 0';
+      }
       if (new URLSearchParams(location.search).has('border')) document.getElementById('main').style.border = '1px solid #000';
     </script>
   </body>

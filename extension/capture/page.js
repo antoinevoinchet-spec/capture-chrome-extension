@@ -225,11 +225,12 @@ export async function pagePrepare(options) {
       top += target ? target.scrollTop : window.scrollY;
     } else if (pick === target) {
       top = 0;
-      height = target.scrollHeight;
+      height = fullHeight;
     } else {
       const start = target ? clientBox(target).top - target.scrollTop : -window.scrollY;
       top = Math.max(0, box.top - start);
-      height = Math.min(box.bottom - start, scrollHeight()) - top;
+      // Comme pour une page entière : si la zone dépasse de l'écran, son bas ne s'affiche jamais en entier.
+      height = Math.min(box.bottom - start, fullHeight) - top;
     }
     if (right - left < 1 || height < 1) return { empty: true };
     if (pick !== target && isScroller(pick)) partial ??= 'scroller';
@@ -239,9 +240,9 @@ export async function pagePrepare(options) {
     if (wide) partial ??= 'wide';
     const reach = Math.min(height, options.maxHeight);
     region = { left, width: right - left, top, height: reach, band: Math.min(clip.h, reach), still, start: target ? target.scrollTop : window.scrollY, partial, alsoWide, truncated: height > options.maxHeight };
-    // Combien le haut de l'image est plus bas que le haut du bloc (un bloc qui commence au-dessus du début de la page).
-    if (!still && pick !== target) {
-      region.skip = top - (box.top - (target ? clientBox(target).top - target.scrollTop : -window.scrollY));
+    // Combien le haut de l'image est plus bas que le haut du bloc (un bloc qui commence au-dessus de la partie visible, ou du début de la page).
+    if (pick !== target) {
+      region.skip = still ? Math.max(box.top, view.top) - box.top : top - (box.top - (target ? clientBox(target).top - target.scrollTop : -window.scrollY));
       state.pick = pick;
     }
     // Les éléments fixes se jugent à la place où le bloc sera capturé.
@@ -252,18 +253,22 @@ export async function pagePrepare(options) {
     state.regionView = still ? { left, right, top: Math.max(box.top, view.top), bottom: Math.min(box.bottom, view.bottom) } : { left, right, top: clip.y, bottom: clip.y + clip.h };
   }
   // Pour un bloc : un élément fixe qui passe devant lui est masqué dès la première tranche, un fond fixe derrière lui reste.
-  const coversRegion = (el) => {
+  // Les autres (hors du bloc, ou pas encore affichés) sont laissés à pageScrollTo, qui masque ce qui deviendra fixe ou visible en cours de route.
+  const placeOfFixed = (el) => {
     const r = el.getBoundingClientRect();
     const v = state.regionView;
     const left = Math.max(r.left, v.left);
     const right = Math.min(r.right, v.right);
     const top = Math.max(r.top, v.top);
     const bottom = Math.min(r.bottom, v.bottom);
-    if (right <= left || bottom <= top) return false;
+    if (right <= left || bottom <= top) return 'apart';
     const stack = document.elementsFromPoint((left + right) / 2, (top + bottom) / 2);
     const own = stack.findIndex((hit) => el.contains(hit));
-    return own < 0 || own < stack.findIndex((hit) => keep.has(hit) && !el.contains(hit));
+    return own < 0 || own < stack.findIndex((hit) => keep.has(hit) && !el.contains(hit)) ? 'front' : 'behind';
   };
+  const behind = new Set();
+  // Un enfant du bloc gardé jusqu'ici, s'il devient fixe en cours de route, se répéterait sur les tranches : seul un fond déjà jugé reste protégé.
+  if (pick && !still) state.lateChild = (el) => el !== pick && pick.contains(el) && !behind.has(el);
   const hasSurface = (el) => {
     const { backgroundImage, backgroundColor } = getComputedStyle(el);
     return backgroundImage !== 'none' || !/^(transparent|rgba\(.*,\s*0\))$/.test(backgroundColor);
@@ -294,11 +299,13 @@ export async function pagePrepare(options) {
     const position = getComputedStyle(el).position;
     if (position !== 'fixed' && position !== 'sticky') continue;
     if (pick && position === 'fixed') {
-      if (coversRegion(el)) {
+      const place = placeOfFixed(el);
+      if (place === 'front') {
         keep.delete(el);
         state.bottomEls.push(el);
-      } else {
+      } else if (place === 'behind') {
         keep.add(el);
+        behind.add(el);
       }
       continue;
     }
@@ -373,7 +380,7 @@ export async function pageScrollTo(y, hideHeaders) {
     const lateFixed = [];
     const lateStuck = [];
     for (const el of document.querySelectorAll('body *')) {
-      if (state.hiddenSet.has(el) || state.keep.has(el)) continue;
+      if (state.hiddenSet.has(el) || (state.keep.has(el) && !state.lateChild?.(el))) continue;
       const position = getComputedStyle(el).position;
       if (position === 'fixed') lateFixed.push(el);
       else if (position === 'sticky' && state.movesWithCapture(el)) lateStuck.push(el);

@@ -213,7 +213,7 @@ export function pickerStart(startMode) {
     for (const name of SWALLOWED) window.addEventListener(name, swallow, { capture: true });
     setTimeout(() => {
       for (const name of SWALLOWED) window.removeEventListener(name, swallow, { capture: true });
-    }, 500);
+    }, 800);
     await stopped;
     chrome.runtime.sendMessage({ type: 'pick-result', mode, rect, zoom: window.devicePixelRatio, innerW: window.innerWidth }).catch(() => {});
   }

@@ -1314,6 +1314,82 @@ async function groupRelecture(context, sw, base) {
     }
   });
 
+  await test('relecture : en-tête du bloc rendu fixe par script, il ne se répète pas', () =>
+    onBlock(context, sw, `${base}/js-header.html`, 'body', async ({ page, viewer, record }) => {
+      const { counts, runs } = await readImage(viewer, { magenta: MAGENTA });
+      const leftover = await page.evaluate(() => getComputedStyle(document.getElementById('header')).opacity);
+      const first = runs[0][2].join() === MAGENTA.join();
+      return { ok: first && counts.magenta <= record.width * 120 && counts.magenta > record.width * 100 && leftover === '1', detail: `${record.width}×${record.height}, magenta ${counts.magenta} (${record.width * 120} au plus), en-tête rendu ${leftover}` };
+    }));
+
+  await test('relecture : bouton affiché après le défilement, il ne se répète pas', () =>
+    onBlock(context, sw, `${tall}?backtop`, '#outer', async ({ viewer }) => {
+      const { counts } = await readImage(viewer, { button: [18, 52, 86] });
+      return { ok: counts.button === 0, detail: `${counts.button} pixels du bouton` };
+    }));
+
+  await test('relecture : le fond fixe derrière un long bloc reste sur toutes les tranches', () =>
+    onBlock(context, sw, `${tall}?back`, 'body', async ({ viewer, record }) => {
+      const { counts, holes } = await readImage(viewer, { back: [160, 208, 255] });
+      return { ok: holes === 0 && counts.back > record.width * 300, detail: `${counts.back} pixels du fond, ${holes} vides, ${record.width}×${record.height}` };
+    }));
+
+  await test('relecture : zone principale dont le bas sort de l’écran, comme une page entière', async () => {
+    const { page, tabId } = await openTab(context, sw, `${base}/shell.html?overflow`);
+    let viewer;
+    try {
+      const shot = await captureBlock(context, sw, page, tabId, '#main');
+      viewer = shot.viewer;
+      const size = await page.evaluate(() => {
+        const el = document.getElementById('main');
+        return { reach: el.scrollHeight - el.clientHeight + (innerHeight - el.getBoundingClientRect().top) };
+      });
+      return { ok: shot.record.height === size.reach * 2, detail: `${shot.record.width}×${shot.record.height}, attendu ${size.reach * 2} de haut` };
+    } finally {
+      await viewer?.close();
+      await page.close();
+    }
+  });
+
+  // Fait bouger la page juste avant la prise de vue numéro `nth`, sans dépendre d'un délai.
+  const shiftBeforeShot = (tabId, nth) =>
+    sw.evaluate(
+      ({ tabId, nth }) => {
+        if (!self.__realShot) self.__realShot = chrome.tabs.captureVisibleTab.bind(chrome.tabs);
+        let calls = 0;
+        Object.defineProperty(chrome.tabs, 'captureVisibleTab', {
+          configurable: true,
+          value: async (...args) => {
+            if (++calls === nth) {
+              await chrome.scripting.executeScript({ target: { tabId }, func: () => (document.getElementById('above').style.height = '430px') });
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            return self.__realShot(...args);
+          },
+        });
+      },
+      { tabId, nth },
+    );
+  const realShot = () => sw.evaluate(() => Object.defineProperty(chrome.tabs, 'captureVisibleTab', { configurable: true, value: self.__realShot }));
+
+  for (const [label, selector, nth] of [['long bloc', '#inner', 2], ['bloc à l’écran', '#leaf', 1]]) {
+    await test(`relecture : ${label}, la page bouge juste avant la prise de vue, la tranche est reprise`, async () => {
+      const { page, tabId } = await openTab(context, sw, `${tall}?noanchor`);
+      let viewer;
+      try {
+        await shiftBeforeShot(tabId, nth);
+        const shot = await captureBlock(context, sw, page, tabId, selector);
+        viewer = shot.viewer;
+        const { wrong, box } = await compareToPage(context, page, viewer, await docRect(page, selector));
+        return { ok: wrong === 0, detail: `${shot.record.width}×${shot.record.height}, différents ${wrong} ${JSON.stringify(box)}` };
+      } finally {
+        await realShot();
+        await viewer?.close();
+        await page.close();
+      }
+    });
+  }
+
   await test('relecture : la page raccourcit pendant la capture, refus plutôt qu’une image fausse', async () => {
     const { page, tabId } = await openTab(context, sw, tall);
     try {
