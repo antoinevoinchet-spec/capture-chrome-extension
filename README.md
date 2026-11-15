@@ -1,63 +1,63 @@
 # Capture
 
-Extension Chrome qui capture une page web entière en haute résolution et la découpe en images nettes, puis permet de l'annoter ou de l'exporter. Elle convertit aussi des images. Pas de serveur, pas de compte.
+A Chrome extension that captures a full web page in high resolution and splits it into sharp images, then lets you annotate or export them. It also converts images. No server, no account.
 
-*In English: a Chrome extension that captures a full web page in high resolution, splits it into sharp images, and lets you annotate or export them. It also converts images, with no server and no account. The interface is in French.*
+*The extension's interface is in French.*
 
-![Page de résultats : une capture découpée en 3 images, avec le choix du découpage et du format](docs/images/resultats.png)
+![Results page: a capture split into 3 images, with the choice of slice length and format](docs/images/resultats.png)
 
-## Ce qu'elle fait
+## What it does
 
-- **Capturer** : la page entière, la partie visible, un bloc (même plus haut que l'écran) ou une zone tracée à la souris. Raccourcis : `Alt+Shift+F`, `Alt+Shift+V`, `Alt+Shift+Z`.
-- **Voir une page sur trois écrans** : téléphone, tablette et ordinateur en une seule action, dans un onglet à part.
-- **Découper et exporter** : quatre longueurs de découpage, en PNG, JPG ou WebP, avec export en un seul PDF ou un seul zip.
-- **Annoter** : flèche, rectangle, surligneur, texte, pastille numérotée, masquage, crayon libre et recadrage. L'original reste intact. Une zone masquée devient une mosaïque dont aucun pixel ne dépend du contenu caché : seules sa taille et sa place restent visibles.
-- **Convertir des images** : HEIC, PNG, JPG, WebP, AVIF, GIF et BMP en entrée ; JPG, PNG, WebP ou un PDF unique en sortie. Les images se déposent ou se collent.
-- **Enregistrer une image d'un site** : clic droit, puis PNG ou JPG.
+- **Capture**: the full page, the visible part, a block (even one taller than the screen) or an area drawn with the mouse. Shortcuts: `Alt+Shift+F`, `Alt+Shift+V`, `Alt+Shift+Z`.
+- **See a page on three screens**: phone, tablet and desktop in a single action, in a separate tab.
+- **Slice and export**: four slice lengths, in PNG, JPG or WebP, with export to a single PDF or a single zip.
+- **Annotate**: arrow, rectangle, highlighter, text, numbered marker, masking, freehand pen and cropping. The original stays untouched. A masked area becomes a mosaic in which no pixel depends on the hidden content: only its size and position remain visible.
+- **Convert images**: HEIC, PNG, JPG, WebP, AVIF, GIF and BMP in; JPG, PNG, WebP or a single PDF out. Images can be dropped or pasted.
+- **Save an image from a website**: right-click, then PNG or JPG.
 
-| Fenêtre de l'extension | Éditeur d'annotation |
+| Extension window | Annotation editor |
 |---|---|
-| ![Fenêtre de l'extension](docs/images/fenetre.png) | ![Éditeur d'annotation avec une flèche, un cadre et une zone masquée](docs/images/editeur.png) |
+| ![Extension window](docs/images/fenetre.png) | ![Annotation editor with an arrow, a frame and a masked area](docs/images/editeur.png) |
 
-## Mon rôle
+## My role
 
-J'ai construit cette extension avec Claude Code. J'ai fixé ce qu'elle devait faire, à partir de mes besoins et de ses propositions, tranché les choix qui engagent le produit (permissions, accès aux sites, périmètre) et validé chaque lot par un essai réel avant de passer au suivant. La méthode est décrite dans [`docs/methode.md`](docs/methode.md).
+I built this extension with Claude Code. I defined what it should do, based on my needs and its proposals, made the decisions that shape the product (permissions, site access, scope) and approved each increment with a hands-on test before moving on to the next. The method is described in [`docs/methode.md`](docs/methode.md) (in French).
 
-## Installer
+## Install
 
-L'extension n'est pas sur le Chrome Web Store.
+The extension is not on the Chrome Web Store.
 
-1. Télécharger ce dépôt.
-2. Ouvrir `chrome://extensions` et activer le mode développeur.
-3. Cliquer sur « Charger l'extension non empaquetée » et choisir le dossier `extension/`.
+1. Download this repository.
+2. Open `chrome://extensions` and turn on developer mode.
+3. Click "Load unpacked" and choose the `extension/` folder.
 
 ## Permissions
 
-| Permission | Pourquoi |
+| Permission | Why |
 |---|---|
-| `activeTab`, `scripting` | Lire et capturer la page en cours, au moment où on le demande |
-| `downloads` | Enregistrer les fichiers produits |
-| `storage` | Garder l'état d'une capture en cours et les réglages |
-| `contextMenus`, `offscreen` | Proposer et traiter le clic droit sur une image |
-| `debugger` | Simuler un téléphone ou une tablette. Non facultative : Chrome l'annonce comme un accès à toutes les données de tous les sites. L'extension ne s'attache qu'à son onglet temporaire, et Chrome affiche un bandeau pendant la capture |
-| Accès à tous les sites (facultatif) | Récupérer une image au clic droit. Chrome le demande à la première utilisation, et il reste accordé jusqu'à son retrait |
+| `activeTab`, `scripting` | Read and capture the current page, when asked to |
+| `downloads` | Save the files produced |
+| `storage` | Keep the state of a capture in progress, and the settings |
+| `contextMenus`, `offscreen` | Offer and handle the right-click on an image |
+| `debugger` | Emulate a phone or a tablet. Not optional: Chrome describes it as access to all data on all sites. The extension only attaches to its own temporary tab, and Chrome shows a banner during the capture |
+| Access to all sites (optional) | Fetch an image on right-click. Chrome asks for it on first use, and it stays granted until removed |
 
-Les captures restent dans le navigateur : rien n'est envoyé à un serveur de l'extension, qui n'en a pas. Elle ne fait appel à un site que pour récupérer l'image choisie au clic droit, avec les cookies du navigateur, et pour recharger la page une fois par appareil dans un onglet temporaire. Le défilement pendant une capture déclenche aussi les chargements habituels de la page.
+Captures stay in the browser: nothing is sent to a server belonging to the extension, which has none. It only contacts a website to fetch the image chosen on right-click, with the browser's cookies, and to reload the page once per device in a temporary tab. Scrolling during a capture also triggers the page's usual loading.
 
-## Limites
+## Limits
 
-- L'interface est en français. L'extension et ses tests ont été éprouvés sur macOS.
-- Une capture s'arrête à 100 000 points de haut. Les pages internes de Chrome et le Chrome Web Store ne se capturent pas.
-- À un zoom de 110 %, « Page entière » pourrait laisser des lignes vides entre les tranches : c'est un calcul, non vérifié sur une vraie image.
-- Un bloc situé dans une autre zone qui défile, ou fixe et plus haut que l'écran, n'est capturé que pour sa partie visible. Plus large que la fenêtre, il est coupé. Le résultat le signale.
-- Le mode trois écrans est une émulation de Chrome, pas un vrai appareil. La page y repart de son état initial, et la capture s'arrête si une autre extension insère une iframe dans la page.
-- Le clic droit ne gère ni les images en fond CSS, ni les SVG. Certains sites peuvent refuser l'image. Une image animée devient fixe.
-- L'export PDF compresse les images en JPEG. Le zip en PNG garde tout.
-- Les tests HEIC utilisent des échantillons fabriqués et un fond d'écran fourni par macOS, pas une vraie photo prise avec un téléphone.
+- The interface is in French. The extension and its tests have been tested on macOS.
+- A capture stops at 100,000 pixels high. Chrome's internal pages and the Chrome Web Store cannot be captured.
+- At 110% zoom, "Full page" ("Page entière" in the interface) might leave blank lines between slices: this is a calculation, not checked on a real image.
+- A block inside another scrolling area, or fixed and taller than the screen, is only captured for its visible part. If it is wider than the window, it is cut off. The result says so.
+- The three-screen mode is Chrome emulation, not a real device. The page starts again from its initial state there, and the capture stops if another extension inserts an iframe into the page.
+- The right-click handles neither CSS background images nor SVGs. Some websites may refuse the image. An animated image becomes static.
+- PDF export compresses images to JPEG. The PNG zip keeps everything.
+- The HEIC tests use synthetic samples and a wallpaper supplied with macOS, not a real photo taken with a phone.
 
 ## Tests
 
-8 suites Playwright, 758 vérifications au 04/11/2026 sur le dépôt de travail, dont des contrôles pixel par pixel des images produites. Le détail, et ce qui a été relancé sur cette copie, est dans [`docs/methode.md`](docs/methode.md). Elles demandent macOS, poppler (`pdfinfo`, `pdftoppm`), `unzip`, Python et un clone git avec ses étiquettes. Elles se lancent une par une :
+8 Playwright suites, 758 checks as of 4 November 2026 on the working repository, including pixel-by-pixel checks of the images produced. The details, and what was re-run on this copy, are in [`docs/methode.md`](docs/methode.md). They need macOS, poppler (`pdfinfo`, `pdftoppm`), `unzip`, Python and a git clone with its tags. They run one at a time:
 
 ```bash
 cd tests
@@ -66,15 +66,15 @@ pnpm exec playwright install chromium
 node convert.mjs /tmp/capture-tests
 ```
 
-Les autres suites sont `e2e.mjs`, `annotate.mjs`, `lot1.mjs` à `lot4.mjs` et `e2e-2026-10-31-etape1-validee.mjs`. Cette dernière rejoue sur le code actuel les contrôles de la première étape. Le dossier `extension-2026-10-31-etape1-validee/` en est seulement une copie conservée.
+The other suites are `e2e.mjs`, `annotate.mjs`, `lot1.mjs` to `lot4.mjs` and `e2e-2026-10-31-etape1-validee.mjs`. The last one replays the checks of the first stage on the current code. The `extension-2026-10-31-etape1-validee/` folder is only a preserved copy of the first-stage code.
 
-## Historique
+## History
 
-Cet historique est une version nettoyée du dépôt de travail, resté privé. Les jours des commits sont conservés, pas leurs heures. Les documents de travail et les commits qui ne portaient que sur eux sont retirés, et certains commentaires sont reformulés.
+This history is a cleaned-up version of the working repository, which stays private. The days of the commits are kept, not their times. Working documents, and the commits that only concerned them, have been removed, and some comments have been reworded.
 
 ## Licences
 
-Aucune licence n'est accordée pour ce code : il est visible, mais sa réutilisation demande mon accord. Les bibliothèques embarquées gardent la leur, dans `extension/vendor/` :
+No licence is granted for this code: it is visible, but reusing it requires my permission. The bundled libraries keep their own, in `extension/vendor/`:
 
-- [Konva](https://github.com/konvajs/konva) 10.3.0 (MIT) ;
-- [heic-to](https://github.com/hoppergee/heic-to) 1.6.7 (LGPL-3.0, avec libheif et libde265). Elle est copiée sans modification, avec le texte de la LGPL et celui de la GPL-3.0.
+- [Konva](https://github.com/konvajs/konva) 10.3.0 (MIT);
+- [heic-to](https://github.com/hoppergee/heic-to) 1.6.7 (LGPL-3.0, with libheif and libde265). It is copied unmodified, with the text of the LGPL and of the GPL-3.0.
