@@ -1,4 +1,5 @@
 import { NOT_ALLOWED, PENDING_KEY, refusalMessage } from '../web-image/save-web-image.js';
+import { parseVideoUrl } from '../transcript/youtube-url.js';
 
 const els = {
   full: document.getElementById('full'),
@@ -13,6 +14,8 @@ const els = {
   error: document.getElementById('error'),
   recent: document.getElementById('recent'),
   convert: document.getElementById('convert'),
+  transcript: document.getElementById('transcript'),
+  transcribe: document.getElementById('transcribe'),
   shortcutHint: document.getElementById('shortcut-hint'),
   shortcutHintText: document.getElementById('shortcut-hint-text'),
   setShortcut: document.getElementById('set-shortcut'),
@@ -57,6 +60,25 @@ els.recent.addEventListener('click', async () => {
 });
 els.convert.addEventListener('click', async () => {
   await chrome.tabs.create({ url: chrome.runtime.getURL('convert/convert.html') });
+  window.close();
+});
+els.transcribe.addEventListener('click', async () => {
+  await chrome.tabs.create({ url: chrome.runtime.getURL('transcript/transcript.html') });
+  window.close();
+});
+
+// Transcription : seulement sur une page de vidéo YouTube. L'adresse de l'onglet actif est lisible grâce au clic sur l'icône (activeTab).
+let videoId = null;
+try {
+  videoId = tab?.url ? parseVideoUrl(tab.url).videoId : null;
+} catch {
+  videoId = null;
+}
+els.transcript.hidden = !videoId;
+// La page s'ouvre toujours : avec l'accès à youtube.com, elle lit la vidéo ; sans lui, elle montre « Autoriser l'accès à YouTube ».
+// La demande d'accès n'est pas faite ici : sous macOS, la fenêtre peut se fermer pendant la question de Chrome, et rien ne s'ouvrirait.
+els.transcript.addEventListener('click', async () => {
+  await chrome.tabs.create({ url: chrome.runtime.getURL(`transcript/transcript.html?v=${videoId}`), active: true });
   window.close();
 });
 

@@ -78,7 +78,7 @@ async function testStorage(context) {
         });
         old.close();
 
-        // Le premier appel de db.js (version 2) migre la base.
+        // Le premier appel de db.js (version 3 depuis la transcription) migre la base.
         const db = await import(chrome.runtime.getURL('lib/db.js'));
         const record = await db.getCapture('ancienne');
         const annotations = await db.getAnnotations('ancienne');
@@ -102,8 +102,8 @@ async function testStorage(context) {
         got.pixels === 'pixels' &&
         got.count === 1 &&
         got.annotations.length === 0 &&
-        got.version === 2 &&
-        got.stores.join() === 'annotations,captures';
+        got.version === 3 &&
+        got.stores.join() === 'annotations,captures,transcripts';
       return { ok, detail: JSON.stringify(got) };
     });
 

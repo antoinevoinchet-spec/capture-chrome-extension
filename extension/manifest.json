@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Capture",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Capture la page entière en haute résolution et la découpe automatiquement en plusieurs images nettes.",
   "permissions": ["activeTab", "scripting", "downloads", "storage", "contextMenus", "offscreen", "debugger"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Transcription</title>
+    <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="../viewer/viewer.css" />
+    <link rel="stylesheet" href="transcript.css" />
+  </head>
+  <body data-state="empty">
+    <header class="top">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+          <rect width="24" height="24" rx="5.4" fill="#23453b" />
+          <rect x="3.5" y="7.7" width="17" height="11.3" rx="1.9" fill="#fff" />
+          <path d="M8.7 5.6h6.6l1.4 2.4H7.3z" fill="#fff" />
+          <circle cx="12" cy="13.4" r="4" fill="#23453b" />
+          <circle cx="12" cy="13.4" r="2.6" fill="#f4c542" />
+          <circle cx="18" cy="9.9" r="0.7" fill="#23453b" />
+        </svg>
+        <span>Capture</span>
+      </div>
+      <div class="heading">
+        <h1 id="title">Transcription</h1>
+        <p id="summary" class="meta"></p>
+      </div>
+      <div class="top-actions">
+        <button id="copy" class="btn-primary" type="button" disabled>Copier</button>
+        <div class="downloads" role="group" aria-label="Télécharger">
+          <button id="save-md" class="btn-secondary" type="button" disabled>.md</button>
+          <button id="save-txt" class="btn-secondary" type="button" disabled>.txt</button>
+          <button id="save-srt" class="btn-secondary" type="button" disabled>.srt</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="panel">
+        <section>
+          <h2><label for="lang">Langue</label></h2>
+          <select id="lang" class="select" disabled></select>
+          <p class="hint">Changer de langue relit la vidéo.</p>
+        </section>
+        <section>
+          <h2 id="times-label">Repères de temps</h2>
+          <div id="times" class="segmented" role="group" aria-labelledby="times-label"></div>
+        </section>
+        <section>
+          <h2 id="format-label">Format</h2>
+          <div id="format" class="segmented" role="group" aria-labelledby="format-label"></div>
+          <p class="hint">Le .md est toujours en Markdown, le .txt toujours en texte simple.</p>
+        </section>
+        <p class="transcript-note">
+          La vidéo est lue dans un onglet caché et muet, refermé aussitôt : ton onglet YouTube n’est pas touché. Rien ne quitte ton
+          navigateur.
+        </p>
+      </aside>
+
+      <main class="mat transcript-mat">
+        <form id="link-form" class="link-form" novalidate>
+          <label for="link" class="link-label">Colle le lien d’une vidéo YouTube</label>
+          <div class="link-row">
+            <input id="link" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…" />
+            <button id="read" class="btn-primary" type="submit">Transcrire</button>
+          </div>
+        </form>
+
+        <div id="loading" class="status" role="status" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="loading-text">Lecture de la transcription…</span>
+          <button id="cancel" class="btn-secondary" type="button">Annuler</button>
+        </div>
+
+        <div id="problem" class="problem" role="alert" hidden>
+          <p id="problem-text"></p>
+          <button id="allow" class="btn-primary" type="button" hidden>Autoriser l’accès à YouTube</button>
+        </div>
+
+        <p id="incomplete" class="incomplete" hidden></p>
+        <pre id="preview" class="preview" tabindex="0" aria-label="Aperçu de la transcription" hidden></pre>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+
+    <script type="module" src="transcript.js"></script>
+  </body>
+</html>
