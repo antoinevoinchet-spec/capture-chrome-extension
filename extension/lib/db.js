@@ -1,22 +1,42 @@
-// Historique local des captures et de leurs annotations (IndexedDB) : partagé entre le service worker et les pages de l'extension.
-// Les annotations ont leur propre magasin (clé = id de la capture) : les enregistrer ne réécrit jamais les tranches.
+// Historique local des captures, de leurs annotations et des transcriptions (IndexedDB) : partagé entre le service worker et les pages
+// de l'extension. Les annotations ont leur propre magasin (clé = id de la capture) : les enregistrer ne réécrit jamais les tranches.
+// Les transcriptions aussi (clé = id de la vidéo) : pruneCaptures ne les voit jamais.
 
 const DB_NAME = 'capture';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const CAPTURES = 'captures';
 const ANNOTATIONS = 'annotations';
+const TRANSCRIPTS = 'transcripts';
+
+// Nombre de transcriptions gardées, à part des 15 captures.
+export const KEEP_TRANSCRIPTS = 30;
+
+const BLOCKED = 'L’historique est retenu par un autre onglet de l’extension resté ouvert : ferme-le, puis réessaie.';
 
 function openDb() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    // Crée chaque magasin manquant sans toucher aux données déjà là (version 1 : captures seules).
+    let gaveUp = false;
+    // Crée chaque magasin manquant sans toucher aux données déjà là (version 1 : captures seules ; version 2 : sans transcriptions).
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(CAPTURES)) db.createObjectStore(CAPTURES, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(ANNOTATIONS)) db.createObjectStore(ANNOTATIONS, { keyPath: 'captureId' });
+      if (!db.objectStoreNames.contains(TRANSCRIPTS)) db.createObjectStore(TRANSCRIPTS, { keyPath: 'videoId' });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // Une version plus récente demande la base : on la laisse passer au lieu de la bloquer.
+      db.onversionchange = () => db.close();
+      if (gaveUp) db.close();
+      else resolve(db);
+    };
     req.onerror = () => reject(req.error);
+    // Une connexion d'une version plus ancienne refuse de se fermer : message clair plutôt qu'une attente sans fin.
+    req.onblocked = () => {
+      gaveUp = true;
+      reject(new Error(BLOCKED));
+    };
   });
 }
 
@@ -175,3 +195,28 @@ export async function listEditKinds() {
 export async function listAnnotatedIds() {
   return new Set(await onStore(ANNOTATIONS, 'readonly', (store) => store.getAllKeys()));
 }
+
+// --- Transcriptions ---
+
+// Une entrée par vidéo : la dernière langue lue remplace la précédente. Puis seules les 30 plus récentes restent, dans la même transaction.
+export function saveTranscript(transcript) {
+  return onStore(TRANSCRIPTS, 'readwrite', (store) => {
+    store.put(transcript);
+    const all = store.getAll();
+    all.onsuccess = () => {
+      const old = all.result.sort((a, b) => b.createdAt - a.createdAt).slice(KEEP_TRANSCRIPTS);
+      for (const { videoId } of old) store.delete(videoId);
+    };
+    return all;
+  }).then(() => undefined);
+}
+
+export const getTranscript = (videoId) => onStore(TRANSCRIPTS, 'readonly', (store) => store.get(videoId));
+
+// Plus récente d'abord, sans les passages : l'historique reste léger.
+export async function listTranscripts() {
+  const all = await onStore(TRANSCRIPTS, 'readonly', (store) => store.getAll());
+  return all.sort((a, b) => b.createdAt - a.createdAt).map(({ cues, ...rest }) => rest);
+}
+
+export const deleteTranscript = (videoId) => onStore(TRANSCRIPTS, 'readwrite', (store) => store.delete(videoId)).then(() => undefined);

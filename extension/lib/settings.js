@@ -1,6 +1,18 @@
 // Derniers choix de l'utilisateur, réutilisés à la capture suivante.
 
-export const DEFAULTS = { split: 'medium', format: 'png' };
+export const DEFAULTS = { split: 'medium', format: 'png', transcriptTimes: 'paragraph', transcriptFormat: 'markdown' };
+
+// Options de la page de transcription : repères de temps et format. La langue n'est pas retenue (elle dépend de la vidéo).
+export const TRANSCRIPT_TIMES = {
+  paragraph: { label: 'Par paragraphe' },
+  cue: { label: 'À chaque passage' },
+  none: { label: 'Aucun' },
+};
+
+export const TRANSCRIPT_FORMATS = {
+  markdown: { label: 'Markdown' },
+  text: { label: 'Texte simple' },
+};
 
 // Hauteur maximale d'une image, en points de page (×2 en pixels sur un écran Retina).
 export const SPLITS = {
@@ -21,6 +33,8 @@ export async function loadSettings() {
   return {
     split: SPLITS[stored.split] ? stored.split : DEFAULTS.split,
     format: FORMATS[stored.format] ? stored.format : DEFAULTS.format,
+    transcriptTimes: TRANSCRIPT_TIMES[stored.transcriptTimes] ? stored.transcriptTimes : DEFAULTS.transcriptTimes,
+    transcriptFormat: TRANSCRIPT_FORMATS[stored.transcriptFormat] ? stored.transcriptFormat : DEFAULTS.transcriptFormat,
   };
 }
 

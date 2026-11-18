@@ -127,7 +127,8 @@ async function groupStockage(context) {
       return { ok: same(got.edits, { items: [], trim: null }) && !got.kept, detail: JSON.stringify(got) };
     });
 
-    await test('cadrage : base toujours en version 2 avec 2 magasins', async () => {
+    // Version 3 et magasin des transcriptions depuis la transcription YouTube.
+    await test('cadrage : base en version 3 avec 3 magasins', async () => {
       await resetDb(page);
       const id = await seedCapture(page, { heightPoints: 900 });
       const got = await page.evaluate(
@@ -145,7 +146,7 @@ async function groupStockage(context) {
         },
         { id, trim: TRIM },
       );
-      return { ok: got.version === 2 && same(got.stores, ['annotations', 'captures']), detail: JSON.stringify(got) };
+      return { ok: got.version === 3 && same(got.stores, ['annotations', 'captures', 'transcripts']), detail: JSON.stringify(got) };
     });
 
     await test('cadrage : capture absente, CaptureGone', async () => {

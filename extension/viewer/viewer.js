@@ -1,6 +1,6 @@
 import { openEditor } from '../annotate/editor.js';
 import { avoidRanges, drawAnnotations } from '../annotate/render.js';
-import { CaptureGone, deleteCapture, deleteGroup, getCapture, getEdits, listCaptures, listEditKinds, listGroup, saveEdits } from '../lib/db.js';
+import { CaptureGone, deleteCapture, deleteGroup, deleteTranscript, getCapture, getEdits, listCaptures, listEditKinds, listGroup, listTranscripts, saveEdits } from '../lib/db.js';
 import { downloadEnd } from '../lib/download-end.js';
 import { FORMATS, SPLITS, loadSettings, saveSettings } from '../lib/settings.js';
 import { exportPdf, exportZip } from './export.js';
@@ -27,6 +27,10 @@ const CHECK =
 
 const CROSS =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+
+// Pictogramme d'une transcription dans l'historique, à la place de la vignette d'image.
+const LINES =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 7h14"/><path d="M5 12h14"/><path d="M5 17h9"/></svg>';
 
 const SCISSORS =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/></svg>';
@@ -140,7 +144,7 @@ async function init() {
   const captures = await listCaptures();
   editKinds = await listEditKinds();
   const id = new URLSearchParams(location.search).get('id') ?? captures[0]?.id;
-  renderHistory(captures);
+  renderHistory(captures, await listTranscripts());
   if (!id) {
     showNoCapture();
     return;
@@ -838,8 +842,9 @@ function fileName(index, ext) {
   return `${DOWNLOAD_FOLDER}/${baseName()}/image-${String(index + 1).padStart(2, '0')}.${ext}`;
 }
 
-function renderHistory(captures) {
-  if (!captures.length) {
+// Les captures et les transcriptions , mêlées du plus récent au plus ancien.
+function renderHistory(captures, transcripts = []) {
+  if (!captures.length && !transcripts.length) {
     const empty = document.createElement('li');
     empty.className = 'history-empty';
     empty.textContent = 'Tes captures apparaîtront ici.';
@@ -859,7 +864,54 @@ function renderHistory(captures) {
     row.members.push(capture.id);
     rows.set(lead.id, row);
   }
-  els.history.replaceChildren(...[...leads.values()].map(historyEntry));
+  const entries = [...[...leads.values()].map((capture) => ({ at: capture.createdAt, make: () => historyEntry(capture) })), ...transcripts.map((t) => ({ at: t.createdAt, make: () => transcriptEntry(t) }))];
+  els.history.replaceChildren(...entries.sort((a, b) => b.at - a.at).map(({ make }) => make()));
+}
+
+// Une transcription dans l'historique : un pictogramme à la place de la vignette, l'étiquette « Transcription », le titre, la chaîne et la
+// date. Elle se rouvre dans la page de transcription, dans le même onglet, sans relire YouTube.
+function transcriptEntry(t) {
+  const item = document.createElement('li');
+  const entry = button('', 'history-item history-transcript', () => {
+    location.href = chrome.runtime.getURL(`transcript/transcript.html?v=${t.videoId}&from=history`);
+  });
+  entry.dataset.videoId = t.videoId;
+  const icon = document.createElement('span');
+  icon.className = 'history-icon';
+  icon.innerHTML = LINES;
+  const title = text(t.title || 'Vidéo YouTube', 'history-title');
+  title.id = `history-transcript-${t.videoId}`;
+  const meta = text('', 'history-meta');
+  meta.append(text(t.channel ? `Transcription · ${t.channel}` : 'Transcription', 'history-host'), text(dates.format(t.createdAt), 'history-date'));
+  const label = document.createElement('span');
+  label.className = 'history-text';
+  label.append(title, meta);
+  entry.append(icon, label);
+
+  const remove = button('', 'history-delete', () => removeTranscript(t.videoId, item));
+  remove.setAttribute('aria-label', 'Supprimer cette transcription');
+  remove.setAttribute('aria-describedby', title.id);
+  remove.title = 'Supprimer cette transcription';
+  remove.innerHTML = CROSS;
+  item.append(entry, remove);
+  return item;
+}
+
+// Même confirmation que pour une capture : la suppression est définitive.
+async function removeTranscript(videoId, item) {
+  if (!confirm('Supprimer cette transcription ? Cette action est définitive.')) return;
+  try {
+    await deleteTranscript(videoId);
+  } catch (err) {
+    console.error('Transcription non supprimée :', err);
+    toast('La transcription n’a pas pu être supprimée. Recharge la page, puis réessaie.');
+    return;
+  }
+  const neighbour = item.nextElementSibling ?? item.previousElementSibling;
+  item.remove();
+  if (!els.history.children.length) renderHistory([]);
+  neighbour?.querySelector('.history-item')?.focus();
+  toast('Transcription supprimée.', { success: true });
 }
 
 // Une entrée de l'historique : la capture à ouvrir, et la croix qui la supprime.
@@ -1039,7 +1091,8 @@ async function removeFromHistory(id) {
   rows.delete(id);
   if (row.members.includes(record?.id)) {
     // La capture affichée disparaît : la plus récente restante la remplace, ou l'écran vide.
-    const latest = els.history.querySelector('.history-item')?.dataset.id;
+    // La plus récente des captures : une transcription ne remplace pas une capture à l'écran.
+    const latest = els.history.querySelector('.history-item[data-id]')?.dataset.id;
     if (latest) {
       openFromHistory(latest);
     } else {

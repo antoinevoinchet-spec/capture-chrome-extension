@@ -461,9 +461,10 @@ async function groupAppareils(context, sw, env) {
   const { base, stats } = env;
   const probe = '/device-probe.html?origin=1&beacon=1';
 
-  await test('manifeste : version 0.5.0 et permissions exactes, sans accès aux sites', async () => {
+  // Version lue dans MANIFEST_EXPECTED depuis la transcription.
+  await test(`manifeste : version ${MANIFEST_EXPECTED.version} et permissions exactes, sans accès aux sites`, async () => {
     const manifest = JSON.parse(await fs.readFile(path.join(EXTENSION, 'manifest.json'), 'utf8'));
-    const ok = manifest.version === '0.5.0' && MANIFEST_EXPECTED.version === '0.5.0' && same(manifest.permissions, MANIFEST_EXPECTED.permissions) && manifest.permissions.includes('debugger') && !manifest.host_permissions;
+    const ok = manifest.version === MANIFEST_EXPECTED.version && same(manifest.permissions, MANIFEST_EXPECTED.permissions) && manifest.permissions.includes('debugger') && !manifest.host_permissions;
     return { ok, detail: `${manifest.version} ; ${manifest.permissions}` };
   });
 

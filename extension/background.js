@@ -1,7 +1,8 @@
 import { pagePrepare, pageScrollTo, pageRegionRect, pageRestore } from './capture/page.js';
 import { pickerStart, pickerStop } from './capture/picker.js';
 import { DevicesCancelled, DevicesError, captureDevices } from './devices/devices.js';
-import { saveCapture, pruneCaptures } from './lib/db.js';
+import { saveCapture, pruneCaptures, saveTranscript } from './lib/db.js';
+import { TranscriptCancelled, explainTranscriptError, readTranscript } from './transcript/reader.js';
 import { setupWebImage } from './web-image/save-web-image.js';
 
 // Chrome refuse plus de 2 appels par seconde à captureVisibleTab.
@@ -9,11 +10,16 @@ const CAPTURE_INTERVAL_MS = 550;
 const KEEP_CAPTURES = 15;
 const BLOCK_GONE = 'Le bloc choisi a disparu de la page. Relance la capture et choisis-le de nouveau.';
 const PAGE_MOVED = "La page a bougé pendant la capture (elle a changé de hauteur). Relance la capture.";
-const BUSY_MESSAGE = "Une capture est déjà en cours : attends qu'elle finisse, puis recommence.";
+// Le drapeau `running` est partagé avec la transcription : le message nomme les deux.
+const BUSY_MESSAGE = "Une capture ou une transcription est déjà en cours : attends qu'elle finisse, puis recommence.";
 // La sélection en cours, dans storage.session : le service worker peut s'endormir pendant qu'on choisit.
 const PICK_KEY = 'picking';
 // La capture d'un bloc ou des trois appareils en cours, relue par la fenêtre de l'icône à sa réouverture pour proposer « Annuler ».
 const CAPTURING_KEY = 'capturing';
+// La transcription en cours : { tempId, videoId, pageTabId }, relue au réveil du service worker pour fermer l'onglet temporaire.
+const TRANSCRIBING_KEY = 'transcribing';
+const TRANSCRIPT_BUSY = 'Une transcription (ou une capture) est déjà en cours : attends qu’elle finisse, puis recommence.';
+const TRANSCRIPT_INTERRUPTED = 'La lecture s’est interrompue : Chrome a arrêté l’extension en route. Relance la transcription.';
 const PAGE_OPTIONS = {
   preload: true,
   preloadStepMs: 120,
@@ -30,6 +36,8 @@ let cancelled = false;
 let lastGrabAt = 0;
 // Arrête la capture des trois appareils en cours.
 let stopDevices = null;
+// La transcription en cours : { videoId, pageTabId, halt }.
+let transcribing = null;
 
 // Un service worker qui démarre n'a aucune capture en cours : un état resté d'une panne ne doit pas bloquer la fenêtre, ni laisser un onglet temporaire.
 chrome.storage.session.get(CAPTURING_KEY).then(async ({ [CAPTURING_KEY]: left }) => {
@@ -38,6 +46,82 @@ chrome.storage.session.get(CAPTURING_KEY).then(async ({ [CAPTURING_KEY]: left })
   await chrome.debugger.detach({ tabId: left.tempId }).catch(() => {});
   await chrome.tabs.remove(left.tempId).catch(() => {});
 });
+
+// Un service worker qui démarre n'a aucune transcription en cours : l'onglet temporaire resté d'une lecture interrompue est fermé,
+// et la page qui attendait reçoit un message au lieu d'attendre sans fin.
+const transcriptLeftover = chrome.storage.session.get(TRANSCRIBING_KEY).then(async ({ [TRANSCRIBING_KEY]: left }) => {
+  if (!left) return;
+  // L'onglet d'abord, la note ensuite : arrêté de nouveau entre les deux, le service worker retrouverait encore l'onglet au réveil suivant.
+  if (left.tempId) await chrome.tabs.remove(left.tempId).catch(() => {});
+  await chrome.storage.session.remove(TRANSCRIBING_KEY);
+  notify({ type: 'transcript-error', videoId: left.videoId, message: TRANSCRIPT_INTERRUPTED });
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.type === 'transcript-read') {
+    if (running) {
+      sendResponse({ ok: false, error: TRANSCRIPT_BUSY });
+      return false;
+    }
+    runTranscript(msg.videoId, msg.lang ?? null, sender.tab?.id ?? null, sender.tab?.windowId);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.type === 'transcript-cancel') {
+    if (transcribing) transcribing.halt(new TranscriptCancelled());
+    // Le service worker est mort pendant la lecture : ce message l'a réveillé ; l'onglet temporaire est fermé par transcriptLeftover.
+    else transcriptLeftover.then(() => notify({ type: 'transcript-cancelled', videoId: msg.videoId ?? null }));
+    return false;
+  }
+  return false;
+});
+
+// La page de transcription garde une connexion ouverte pendant la lecture : la page fermée, la lecture s'arrête.
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'transcript') return;
+  const pageTabId = port.sender?.tab?.id ?? null;
+  port.onDisconnect.addListener(() => {
+    if (transcribing && transcribing.pageTabId === pageTabId) transcribing.halt(new TranscriptCancelled());
+  });
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (transcribing && transcribing.pageTabId === tabId) transcribing.halt(new TranscriptCancelled());
+});
+
+// Une seule tâche longue à la fois : le drapeau `running` est partagé avec les captures.
+async function runTranscript(videoId, lang, pageTabId, windowId) {
+  running = true;
+  let early = null;
+  transcribing = { videoId, pageTabId, halt: (err) => (early ??= err) };
+  let state = { videoId, pageTabId, tempId: null };
+  let outcome;
+  try {
+    await chrome.storage.session.set({ [TRANSCRIBING_KEY]: state });
+    const transcript = await readTranscript(videoId, {
+      lang,
+      windowId,
+      onStart: async ({ tempId, halt }) => {
+        transcribing.halt = halt;
+        // « Annuler » ou page fermée avant que l'onglet temporaire n'existe.
+        if (early) halt(early);
+        state = { ...state, tempId };
+        await chrome.storage.session.set({ [TRANSCRIBING_KEY]: state });
+      },
+      onProgress: (seconds) => notify({ type: 'transcript-progress', videoId, seconds }),
+    });
+    await saveTranscript(transcript);
+    outcome = { type: 'transcript-done', videoId };
+  } catch (err) {
+    outcome = err instanceof TranscriptCancelled ? { type: 'transcript-cancelled', videoId } : { type: 'transcript-error', videoId, message: explainTranscriptError(err), code: err?.code ?? '' };
+  } finally {
+    transcribing = null;
+    running = false;
+    await chrome.storage.session.remove(TRANSCRIBING_KEY);
+  }
+  // Annoncé une fois la place libérée : la page peut aussitôt relancer (autre langue) sans être refusée.
+  notify(outcome);
+}
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type !== 'capture' && msg?.type !== 'capture-devices') return false;
