@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
+  <!-- Version 16 px retouchée aux pixels : équerres de 2 px, point de 4 px, liseré de 1 px. -->
+  <rect x="0.5" y="0.5" width="15" height="15" rx="3.5" fill="#1d1d1f" stroke="#5a5a5d" shape-rendering="geometricPrecision"/>
+  <path d="M3 3h4v2H5v2H3z" fill="#fff"/>
+  <path d="M13 13H9v-2h2V9h2z" fill="#fff"/>
+  <rect x="9" y="3" width="4" height="4" rx="1" fill="#e08a62" shape-rendering="geometricPrecision"/>
+</svg>

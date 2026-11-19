@@ -1,89 +1,57 @@
-/* Éditeur d'annotation : calque plein écran posé sur la page de résultats.
-   Les couleurs viennent de ui/tokens.css (clair et sombre) ; seules les 5 couleurs d'annotation sont écrites ailleurs (shapes.js). */
+/* Éditeur d'annotation : calque plein écran posé sur la page des captures.
+   Rôles et composants du design system (ui/tokens.css, ui/components.css). Seules les 5 couleurs d'annotation sont écrites ailleurs
+   (shapes.js) ; le dessin du recadrage et des coupes garde ses valeurs propres, marquées « hors tokens ». */
 
 .editor {
+  --tools-w: 72px; /* hors tokens : largeur de la colonne d'outils */
   position: fixed;
   inset: 0;
-  z-index: 5;
+  /* Au-dessus de l'en-tête collant de la page (10) et de ses menus (20) ; sous le message temporaire (100). */
+  z-index: 30;
   display: grid;
   grid-template-rows: auto 1fr;
-  background: var(--paper);
+  background: var(--bg);
 }
 
-/* En-tête */
+/* ---------- Barre du haut : même hauteur que l'en-tête des pages ---------- */
 
 .editor-head {
-  border-bottom: 1px solid var(--line);
+  background: var(--surface);
 }
 
 .editor-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: var(--space-2);
+  height: var(--header-h);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border); /* filet compris dans les 56 px, comme .app-header */
 }
 
 .editor-title {
   flex: 1;
+  min-width: 0;
   margin: 0;
   overflow: hidden;
-  font-size: 17px;
-  font-weight: 600;
+  font-size: var(--text-16);
+  font-weight: var(--weight-semibold);
   text-align: center;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.editor-close {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.editor-close svg {
-  width: 18px;
-  height: 18px;
-}
-
 .editor-history {
   display: flex;
-  gap: 6px;
-}
-
-.editor-icon {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--paper-raised);
-}
-
-.editor-icon:not(:disabled):hover {
-  border-color: var(--ink-muted);
-}
-
-.editor-icon svg {
-  width: 20px;
-  height: 20px;
-}
-
-/* « Tout effacer » : à part d'Annuler et Rétablir, et rouge au survol pour qu'on le remarque. */
-.editor-clear {
-  margin-left: 8px;
-}
-
-.editor-clear:not(:disabled):hover {
-  color: var(--danger);
-  border-color: var(--danger);
+  gap: var(--space-1);
+  margin-right: var(--space-2);
 }
 
 .editor-head .save-alert {
-  margin: 0 16px 10px;
+  margin: 0 var(--space-4) var(--space-2);
+  border-radius: var(--radius-m);
 }
 
-/* Barre d'outils verticale */
+/* ---------- Colonne d'outils ---------- */
 
 .editor-body {
   position: relative;
@@ -95,149 +63,167 @@
 .editor-tools {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  width: 68px;
-  padding: 12px 0;
+  gap: var(--space-2);
+  width: var(--tools-w);
+  padding: var(--space-3) 0;
   overflow-y: auto;
-  border-right: 1px solid var(--line);
+  border-right: 1px solid var(--border);
+  background: var(--surface);
 }
 
-.editor-group {
+.editor-group,
+.editor-extra {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1);
 }
 
-.editor-group + .editor-group {
-  margin: 0 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+.editor-tools > * + * {
+  margin: 0 var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+/* « Tout effacer » : tout en bas, séparé des autres outils et loin d'Annuler et Rétablir. */
+.editor-clear-box {
+  margin-top: auto !important;
 }
 
 .editor-tool,
 .editor-size {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: var(--control-l);
+  height: var(--control-l);
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--radius-m);
+  color: var(--text);
   background: transparent;
 }
 
-.editor-tool svg,
-.editor-size svg {
-  width: 22px;
-  height: 22px;
-}
-
-.editor-tool:hover,
+.editor-tool:not(:disabled):hover,
 .editor-size:not(:disabled):hover {
-  background: var(--paper-sunk);
+  background: var(--surface-hover);
 }
 
+/* Outil, taille et recadrage choisis : la sélection prend l'accent. */
 .editor-tool[aria-pressed="true"],
 .editor-size[aria-pressed="true"] {
-  color: var(--primary-fg);
-  background: var(--primary-bg);
+  color: var(--accent-text);
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.editor-clear:not(:disabled):hover {
+  color: var(--danger);
+  background: var(--danger-subtle);
+}
+
+.editor-dot {
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.editor-dot[data-size="s"] {
+  width: var(--space-1);
+  height: var(--space-1);
+}
+
+.editor-dot[data-size="m"] {
+  width: var(--space-2);
+  height: var(--space-2);
+}
+
+.editor-dot[data-size="l"] {
+  width: var(--space-3);
+  height: var(--space-3);
 }
 
 .editor-color {
-  width: 26px;
-  height: 26px;
+  width: var(--space-5);
+  height: var(--space-5);
   border: 0;
   border-radius: 50%;
   background: var(--swatch);
-  box-shadow: inset 0 0 0 1px var(--ink-muted);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 .editor-color[aria-pressed="true"] {
-  box-shadow: inset 0 0 0 1px var(--ink-muted), 0 0 0 2px var(--paper), 0 0 0 4px var(--ink);
+  box-shadow: inset 0 0 0 1px var(--border-strong), 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
 }
 
 .editor-color:focus-visible {
-  outline-offset: 5px;
+  outline-offset: 4px;
 }
 
-/* Fenêtre basse : la barre se resserre pour que les tailles restent visibles sans défiler. */
-@media (max-height: 760px) {
+/* Info-bulle d'un outil (editor.js la place à droite du bouton survolé ou atteint au clavier). */
+.editor-tip {
+  position: fixed;
+  z-index: 40;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-s);
+  font-size: var(--text-12);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  color: var(--primary-fg);
+  background: var(--primary-bg);
+  box-shadow: var(--shadow-1);
+  pointer-events: none;
+}
+
+/* Fenêtre basse : la colonne se resserre pour que tout reste visible sans défiler. */
+@media (max-height: 760px) { /* hors tokens : point de rupture de hauteur */
   .editor-tools {
-    gap: 8px;
-    padding: 8px 0;
+    gap: var(--space-1);
+    padding: var(--space-2) 0;
   }
 
-  .editor-group {
-    gap: 4px;
+  .editor-group,
+  .editor-extra {
+    gap: 0;
   }
 
-  .editor-group + .editor-group {
-    padding-top: 8px;
+  .editor-tools > * + * {
+    padding-top: var(--space-1);
   }
 
   .editor-tool,
   .editor-size {
-    width: 34px;
-    height: 34px;
-  }
-
-  .editor-tool svg,
-  .editor-size svg {
-    width: 20px;
-    height: 20px;
-  }
-
-  .editor-color {
-    width: 22px;
-    height: 22px;
-  }
-}
-
-/* Fenêtre très basse, ou bandeau d'alerte affiché : la barre se resserre encore. */
-@media (max-height: 660px) {
-  .editor-tools {
-    gap: 6px;
-    padding: 6px 0;
-  }
-
-  .editor-group {
-    gap: 2px;
+    width: var(--control-s);
+    height: var(--control-s);
   }
 
   .editor-group[data-kind="color"] {
-    gap: 6px;
+    gap: var(--space-1);
+  }
+}
+
+/* Fenêtre très basse, ou bandeau d'alerte affiché : outils, couleurs et tailles passent sur deux colonnes. */
+@media (max-height: 660px) { /* hors tokens : point de rupture de hauteur */
+  .editor-tools > * + * {
+    margin: 0 var(--space-1);
   }
 
-  .editor-group + .editor-group {
-    padding-top: 6px;
+  .editor-group {
+    display: grid;
+    grid-template-columns: repeat(2, auto);
+    justify-content: center;
+    gap: 0;
   }
 
-  .editor-tool,
-  .editor-size {
-    width: 30px;
-    height: 30px;
-  }
-
-  .editor-tool svg,
-  .editor-size svg {
-    width: 18px;
-    height: 18px;
-  }
-
-  .editor-color {
-    width: 20px;
-    height: 20px;
+  .editor-group[data-kind="color"] {
+    gap: var(--space-1);
   }
 }
 
 /* Zone de défilement : le fond (tuiles) défile, le calque d'annotations reste collé en haut. */
 
 .editor-scroll {
-  --focus: var(--cut);
   position: relative;
   overflow: auto;
   scrollbar-gutter: stable;
-  background: var(--mat);
+  background: var(--stage);
 }
 
 .editor-stage-host {
@@ -282,22 +268,22 @@
   paint-order: stroke fill;
 }
 
-/* Anneau double : le jaune se voit sur une capture sombre, le vert profond sur une capture claire. */
+/* Anneau double : le blanc se voit sur une capture sombre, le noir sur une capture claire (la capture ne suit pas le thème). */
 .editor-text:focus-visible {
-  outline: 2px solid var(--mat);
+  outline: 2px solid #1d1d1f; /* hors tokens : anneau lisible sur toute capture */
   outline-offset: 2px;
-  box-shadow: 0 0 0 2px var(--cut);
+  box-shadow: 0 0 0 2px #fff; /* hors tokens : anneau lisible sur toute capture */
 }
 
 /* Place pour faire défiler le bas de l'image au-dessus de la barre du recadrage. */
 .editor-scroll[data-trim-bar] {
-  padding-bottom: 76px;
+  padding-bottom: 76px; /* hors tokens : hauteur de la barre du recadrage et sa marge */
 }
 
 .editor-page {
   position: relative;
-  background: #fff;
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25), 0 18px 40px -18px rgb(0 0 0 / 0.65);
+  background: #fff; /* hors tokens : fond blanc d'une capture, comme dans le fichier exporté */
+  box-shadow: 0 0 0 1px var(--image-edge), var(--shadow-1);
 }
 
 .editor-tile {
@@ -318,14 +304,9 @@
   left: 0;
   width: 100%;
   margin-top: -1px;
-  border-top: 2px dashed var(--cut);
-  filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.8));
+  border-top: 2px dashed var(--accent);
+  filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.8)); /* hors tokens : halo qui garde la coupe lisible sur toute capture */
   pointer-events: none;
-}
-
-#editor-trim[aria-pressed="true"] {
-  color: var(--primary-fg);
-  background: var(--primary-bg);
 }
 
 /* Recadrage : le voile et le cadre suivent le défilement, au-dessus des annotations. Hors du réglage, ils ne prennent aucun clic. */
@@ -343,14 +324,14 @@
 
 .editor-trim-veil {
   position: absolute;
-  background: rgb(0 0 0 / 0.55);
+  background: rgb(0 0 0 / 0.55); /* hors tokens : voile du recadrage, le même sur toute capture */
 }
 
 .editor-trim-box {
   position: absolute;
-  outline: 2px solid var(--cut);
+  outline: 2px solid var(--accent);
   outline-offset: -1px;
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6); /* hors tokens : liseré sombre du cadre, lisible sur toute capture */
 }
 
 .editor-trim-layer[data-active] .editor-trim-box {
@@ -358,7 +339,7 @@
 }
 
 .editor-trim-box:focus-visible {
-  outline: 3px solid var(--on-mat);
+  outline: 3px solid #fff; /* hors tokens : focus du cadre, posé sur la capture voilée */
 }
 
 /* Poignées : posées à l'intérieur du cadre, elles restent saisissables quand il touche le bord de l'image. Un côté se saisit sur toute sa
@@ -367,7 +348,7 @@
   position: absolute;
   display: none;
   /* Déplacée au clavier, une poignée du bas reste au-dessus de la barre du recadrage. */
-  scroll-margin-bottom: 76px;
+  scroll-margin-bottom: 76px; /* hors tokens : hauteur de la barre du recadrage et sa marge */
 }
 
 .editor-trim-layer[data-active] .editor-trim-handle {
@@ -377,13 +358,13 @@
 .editor-trim-handle::after {
   content: "";
   position: absolute;
-  border-radius: 3px;
-  background: var(--cut);
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6);
+  border-radius: 3px; /* hors tokens : dessin des poignées */
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6); /* hors tokens : liseré des poignées, lisible sur toute capture */
 }
 
 .editor-trim-handle:focus-visible {
-  outline: 2px solid var(--on-mat);
+  outline: 2px solid #fff; /* hors tokens : focus d'une poignée, posée sur la capture voilée */
   outline-offset: -2px;
 }
 
@@ -391,7 +372,7 @@
 .editor-trim-handle[data-edge="s"] {
   left: 0;
   right: 0;
-  height: 12px;
+  height: 12px; /* hors tokens : prise des poignées */
   cursor: ns-resize;
 }
 
@@ -402,7 +383,7 @@
 .editor-trim-handle[data-edge="w"] {
   top: 0;
   bottom: 0;
-  width: 12px;
+  width: 12px; /* hors tokens : prise des poignées */
   cursor: ew-resize;
 }
 
@@ -411,6 +392,7 @@
 
 .editor-trim-handle[data-edge="n"]::after,
 .editor-trim-handle[data-edge="s"]::after {
+  /* hors tokens : dessin des poignées (les 4 lignes suivantes) */
   top: 2px;
   left: calc(50% - 14px);
   width: 28px;
@@ -419,6 +401,7 @@
 
 .editor-trim-handle[data-edge="e"]::after,
 .editor-trim-handle[data-edge="w"]::after {
+  /* hors tokens : dessin des poignées (les 4 lignes suivantes) */
   top: calc(50% - 14px);
   left: 2px;
   width: 6px;
@@ -430,8 +413,8 @@
 .editor-trim-handle[data-edge="sw"],
 .editor-trim-handle[data-edge="nw"] {
   z-index: 1;
-  width: 18px;
-  height: 18px;
+  width: 18px; /* hors tokens : prise des poignées de coin */
+  height: 18px; /* hors tokens : prise des poignées de coin */
 }
 
 .editor-trim-handle[data-edge="ne"] { top: 0; right: 0; cursor: nesw-resize; }
@@ -449,9 +432,9 @@
 /* Barre du recadrage : posée sur l'image, sans changer la taille de la zone de dessin. Seuls ses boutons prennent les clics. */
 .editor-trim-bar {
   position: absolute;
-  right: 16px;
-  bottom: 12px;
-  left: 84px;
+  right: var(--space-4);
+  bottom: var(--space-3);
+  left: calc(var(--tools-w) + var(--space-3));
   z-index: 3;
   display: flex;
   justify-content: center;
@@ -461,24 +444,24 @@
 .editor-trim-panel {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   max-width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--paper-raised);
-  box-shadow: 0 8px 24px -10px rgb(0 0 0 / 0.5);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
 }
 
 .editor-trim-text {
   margin: 0;
-  font-size: 13px;
-  line-height: 1.3;
-  color: var(--ink-muted);
+  font-size: var(--text-13);
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 .editor-trim-text strong {
-  color: var(--ink);
+  color: var(--text);
   white-space: nowrap;
 }
 

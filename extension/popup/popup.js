@@ -1,5 +1,12 @@
 import { NOT_ALLOWED, PENDING_KEY, refusalMessage } from '../web-image/save-web-image.js';
 import { parseVideoUrl } from '../transcript/youtube-url.js';
+import { fillIcons, logo } from '../ui/icons.js';
+import { countCaptures } from '../lib/db.js';
+
+// Sécurité : si une lecture ci-dessous échoue, le panneau s'affiche quand même.
+setTimeout(() => document.body.classList.remove('is-loading'), 150);
+fillIcons();
+document.querySelector('[data-logo]').replaceWith(logo(20));
 
 const els = {
   full: document.getElementById('full'),
@@ -12,6 +19,7 @@ const els = {
   barFill: document.getElementById('bar-fill'),
   cancel: document.getElementById('cancel'),
   error: document.getElementById('error'),
+  errorText: document.getElementById('error-text'),
   recent: document.getElementById('recent'),
   convert: document.getElementById('convert'),
   transcript: document.getElementById('transcript'),
@@ -20,11 +28,20 @@ const els = {
   shortcutHintText: document.getElementById('shortcut-hint-text'),
   setShortcut: document.getElementById('set-shortcut'),
   version: document.getElementById('version'),
+  shortcuts: document.getElementById('shortcuts'),
+  tip: document.getElementById('tip'),
+  tipClose: document.getElementById('tip-close'),
+  recentCount: document.getElementById('recent-count'),
 };
 
-const COMMAND_LABELS = { 'capture-full': '« Page entière »', 'capture-visible': '« Partie visible »', 'capture-pick': '« Un bloc »' };
+// « A », « A et B », « A, B et C ».
+const listFr = (items) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} et ${items.at(-1)}`);
 
-els.version.textContent = `Version ${chrome.runtime.getManifest().version}`;
+// Espaces insécables dans les guillemets : un « » » ne se retrouve jamais seul en début de ligne.
+const COMMAND_LABELS = { 'capture-full': '«\u00a0Page entière\u00a0»', 'capture-visible': '«\u00a0Visible\u00a0»', 'capture-pick': '«\u00a0Un bloc\u00a0»' };
+
+els.version.textContent = `v${chrome.runtime.getManifest().version}`;
+els.version.title = `Version ${chrome.runtime.getManifest().version}`;
 
 const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -41,12 +58,22 @@ for (const command of await chrome.commands.getAll()) {
   }
 }
 if (unassigned.length) {
-  els.shortcutHintText.textContent = `Pas de raccourci clavier pour ${unassigned.join(' et ')} : une autre extension utilise peut-être la même touche.`;
+  els.shortcutHintText.textContent = `Pas de raccourci pour ${listFr(unassigned)} : une autre extension a peut-être pris la touche.`;
   els.shortcutHint.hidden = false;
 }
-els.setShortcut.addEventListener('click', async () => {
-  await chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
-  window.close();
+for (const button of [els.setShortcut, els.shortcuts]) {
+  button.addEventListener('click', async () => {
+    await chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+    window.close();
+  });
+}
+
+// Astuce du clic droit : refermable, et fermée pour de bon.
+const { tipRightClickClosed } = await chrome.storage.local.get('tipRightClickClosed');
+els.tip.hidden = Boolean(tipRightClickClosed);
+els.tipClose.addEventListener('click', () => {
+  els.tip.hidden = true;
+  chrome.storage.local.set({ tipRightClickClosed: true });
 });
 
 els.full.addEventListener('click', () => start('full'));
@@ -75,6 +102,17 @@ try {
   videoId = null;
 }
 els.transcript.hidden = !videoId;
+
+// Tout ce qui change la hauteur est connu : le panneau s'affiche, et plus rien ne bouge au-dessus de la zone de statut.
+document.body.classList.remove('is-loading');
+
+// Le nombre de captures arrive après l'affichage, dans une place déjà réservée.
+countCaptures()
+  .then((count) => {
+    els.recentCount.textContent = count ? String(count) : '';
+    els.recent.setAttribute('aria-label', count ? `Captures récentes, ${count}` : 'Captures récentes');
+  })
+  .catch(() => {});
 // La page s'ouvre toujours : avec l'accès à youtube.com, elle lit la vidéo ; sans lui, elle montre « Autoriser l'accès à YouTube ».
 // La demande d'accès n'est pas faite ici : sous macOS, la fenêtre peut se fermer pendant la question de Chrome, et rien ne s'ouvrirait.
 els.transcript.addEventListener('click', async () => {
@@ -155,6 +193,13 @@ async function start(mode) {
 }
 
 async function startDevices() {
+  // Première fois : une page de l'extension explique le bandeau de débogage et l'onglet à part, puis lance elle-même.
+  const { devicesConfirmed } = await chrome.storage.local.get('devicesConfirmed');
+  if (!devicesConfirmed) {
+    await chrome.tabs.create({ url: chrome.runtime.getURL(`devices/confirm.html?tab=${tab.id}`), active: true });
+    window.close();
+    return;
+  }
   els.error.hidden = true;
   setBusy(true);
   els.cancel.hidden = false;
@@ -186,6 +231,6 @@ function showError(message) {
   setBusy(false);
   els.cancel.hidden = true;
   els.cancel.disabled = false;
-  els.error.textContent = message;
+  els.errorText.textContent = message;
   els.error.hidden = false;
 }

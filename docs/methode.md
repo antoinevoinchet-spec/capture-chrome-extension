@@ -8,7 +8,7 @@ Le porteur du projet fixe ce que le produit doit faire, à partir de ses besoins
 
 ## Une conception avant le code
 
-Quatre documents de conception existent : l'éditeur d'annotation, le convertisseur, les six ajouts réunis, et la transcription YouTube. Ils suivent la même trame, dans cet ordre :
+Cinq documents de conception existent : l'éditeur d'annotation, le convertisseur, les six ajouts réunis, la transcription YouTube et le design system. Ils suivent la même trame, dans cet ordre :
 
 - **Intention** : ce que la fonctionnalité apporte.
 - **Objectifs** : ce qui doit marcher (sauf dans le document des ajouts, qui part de l'intention).
@@ -31,12 +31,14 @@ Le dernier lot commence par un essai. Il mesure des critères d'arrêt fixés à
 
 La transcription YouTube (version 0.6.0) a son propre plan. Il commence lui aussi par un essai : trois façons de lire le texte d'une vidéo, mesurées sur onze vidéos, d'abord dans un Chromium de test, puis sur le Chrome connecté du porteur du projet. L'essai relève aussi les effets sur son compte YouTube : historique, position de reprise, langue de sous-titres retenue. La façon retenue est la plus sûre de celles qui changent de langue, une autre sert de secours, et la troisième n'a pas été construite. Pour deux tâches de ce plan, le code a été écrit avant ses tests ; le journal le note.
 
+Le design system (version 0.7.0) a aussi son plan. Il part de trois relectures neutres des écrans (ergonomie, cohérence visuelle, accessibilité) et des six changements de comportement qu'elles ont fait retenir. Les couleurs sont écrites en deux couches, des gammes de gris chaud et de terre cuite puis des rôles (fond, texte, accent, focus, danger), et chaque contraste de rôle est vérifié par un test, en clair et en sombre. Un audit axe tourne sur chaque écran dans les deux modes : une couleur qu'axe ne sait pas lire fait échouer le test au lieu de passer en silence. Des contrôles statiques refusent toute couleur ou taille écrite en dur dans les écrans, sauf sur une ligne commentée qui dit pourquoi. Après chaque écran refait, toutes les suites existantes qui le touchent ont été relancées, pas seulement celle de l'écran : c'est ce qui a montré qu'une phrase d'aide avait disparu d'un autre écran. Les photos ont aussi trouvé ce que les tests ne voyaient pas, comme des libellés coupés d'un pixel ; un test a été ajouté à chaque fois.
+
 ## Comment un lot se termine
 
 1. La suite de tests du lot est lancée, puis les suites existantes, une par une, avec les nombres réels.
 2. Les promesses modifiées volontairement sont notées d'une ligne datée dans les anciens documents.
 3. Le journal est mis à jour : état, décisions, pièges, commandes, résultats.
-4. Un relecteur neuf, en lecture seule, reçoit la demande d'origine, la conception, les exigences du lot, le journal et les commits. Il ne reçoit pas le raisonnement de la session. Il ne lance rien et ne rend que les écarts qui changent le résultat. Chaque écart est vérifié, puis corrigé, ou nommé comme non retenu ou resté ouvert. Le verdict est écrit dans le journal. Il a rendu « à refaire » cinq fois : deux passages au lot 3, deux au lot 4, un à la transcription. Pour la transcription, un modèle d'une autre famille a aussi relu le code ; les deux relectures ont relevé dix écarts, tous corrigés avec un test.
+4. Un relecteur neuf, en lecture seule, reçoit la demande d'origine, la conception, les exigences du lot, le journal et les commits. Il ne reçoit pas le raisonnement de la session. Il ne lance rien et ne rend que les écarts qui changent le résultat. Chaque écart est vérifié, puis corrigé, ou nommé comme non retenu ou resté ouvert. Le verdict est écrit dans le journal. Il a rendu « à refaire » cinq fois : deux passages au lot 3, deux au lot 4, un à la transcription. Pour le design system, il a rendu « prêt » avec quatre écarts, dont trois corrigés et un laissé ouvert, puis un second évaluateur a comparé le code à la conception. Pour la transcription, un modèle d'une autre famille a aussi relu le code ; les deux relectures ont relevé dix écarts, tous corrigés avec un test.
 5. Un essai réel est demandé : d'abord recharger l'extension et lire sa version, pour être sûr de tester le nouveau code, puis quelques gestes qui disent ce qu'ils débloquent et ce qu'on doit voir.
 6. L'étiquette `lotN-valide` n'est posée qu'après cet essai réussi. La session s'arrête là.
 
@@ -70,8 +72,8 @@ Un test écrit avec son correctif est rejoué sur l'ancien code. Le journal note
 
 ## Dernier relevé
 
-Fin de la transcription, le 18/11/2026, sur le dépôt de travail. Les neuf suites ont été lancées l'une après l'autre, avec le code de sortie 0 chacune : transcription 108/108, lot 1 100/100, lot 2 83/83, lot 3 95/95, lot 4 98/98, convertisseur 96/96, éditeur d'annotation 128/128, capture 116/116, étape 1 42/42. Les corrections des relectures sont venues après un premier passage complet : la suite de transcription, les lots 1, 3 et 4, l'éditeur et la capture ont été relancés après elles ; le lot 2, le convertisseur et l'étape 1, qu'elles ne touchent pas, ne l'ont pas été. Trois vraies vidéos YouTube ont aussi été lues, avec les seules permissions de l'extension livrée.
+Fin du design system, le 19/11/2026, sur cette copie publique. Les dix suites ont été lancées l'une après l'autre, avec le code de sortie 0 chacune : design system 139/139, lot 4 98/98, convertisseur 96/96, éditeur d'annotation 128/128, capture 116/116, étape 1 42/42, lot 1 100/100 (dont l'export de 100 000 points, lancé seul), lot 2 83/83, lot 3 95/95, transcription 108/108. Les mêmes nombres ont été obtenus la veille sur le dépôt de travail.
 
-Au lot 4, le journal notait aussi ce qui n'était pas prouvé : le contrôle de couverture final avait été fait par la session elle-même, avec un regard moins indépendant, et le dernier correctif du lot 4 n'avait pas eu de troisième relecteur. Pour la transcription, ce contrôle a été confié à un évaluateur neuf. Reste non prouvé par un test : l'effet sur le compte YouTube le lendemain d'une transcription (position de reprise, historique), que seul le porteur du projet peut vérifier.
+Reste non prouvé par un test : le rendu sur un vrai Chrome, que le porteur du projet a vérifié à la main (panneau, capture annotée et téléchargée, conversion, transcription, mode sombre), et l'effet sur le compte YouTube le lendemain d'une transcription.
 
-Cette copie publique diffère ensuite du dépôt de travail par des textes d'interface et des commentaires, et par l'adresse du groupe `site` de `lot4.mjs`, devenue obligatoire. Les huit suites n'y ont pas toutes été relancées : le 05/11/2026, le convertisseur et le lot 2 l'ont été, avec un chemin de navigateur adapté.
+Cette copie publique diffère du dépôt de travail par des textes d'interface et des commentaires, et par l'adresse du groupe `site` de `lot4.mjs`, qui doit être fournie.

@@ -222,7 +222,14 @@ async function testLongPage(context, sw, url) {
   const third = await copyAndRead(viewer, header);
   check('le bouton suit le défilement : image 3 copiée', /image 3$/.test(label3) && third.size === `2560 × ${parts[2].height}`, `${label3} → ${third.size}`);
 
-  const second = await copyAndRead(viewer, viewer.locator('figure.part').nth(1).getByRole('button', { name: 'Copier' }));
+  // « Copier » d'une image passe par son bouton « ⋯ », puis l'élément du menu.
+  const viaMore = {
+    click: async () => {
+      await viewer.locator('figure.part').nth(1).locator('.part-more').click();
+      await viewer.locator('#image-menu [data-action="copy"]').click();
+    },
+  };
+  const second = await copyAndRead(viewer, viaMore);
   check('bouton « Copier » posé sur une image (image 2)', second.size === `2560 × ${parts[1].height}`, `« ${second.message} » / ${second.size}`);
 
   await viewer.locator('figure.part').nth(3).locator('canvas').click({ button: 'right' });

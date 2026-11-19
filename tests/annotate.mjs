@@ -6,7 +6,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { EXTENSION, capture, check, copyAndRead, extensionPage, launch, openTab, prepareExtension, results, seedCapture, serve } from './lib.mjs';
+import { EXTENSION, capture, check, copyAndRead, extensionPage, launch, openTab, partAction, prepareExtension, results, seedCapture, serve } from './lib.mjs';
 
 const WORK = path.resolve(process.argv[2] ?? path.join(import.meta.dirname, 'out-annotate'));
 // Troisième argument facultatif : ne lancer qu'un groupe de vérifications (storage, rendering, editor, tools, retouch, history ou finish).
@@ -58,7 +58,8 @@ function resetDb(page) {
 
 async function testStorage(context) {
   console.log('\n— Stockage des annotations (IndexedDB, version 2)');
-  const page = await extensionPage(context, 'popup/popup.html');
+  // Une page de l'extension qui ne lit pas la base : le panneau compte les captures à son ouverture et recréerait la base effacée.
+  const page = await extensionPage(context, 'ui/demo.html');
   try {
     await test('base migrée sans perte', async () => {
       await resetDb(page);
@@ -394,7 +395,8 @@ async function copyAndAnalyze(viewer, trigger, fn, arg) {
   return { ...copied, result: await inImage(viewer, 'clipboard', fn, arg) };
 }
 
-const copyButton = (viewer, index) => viewer.locator('figure.part').nth(index).getByRole('button', { name: 'Copier', exact: true });
+// les actions d'une image passent par son bouton « ⋯ ».
+const copyButton = (viewer, index) => partAction(viewer, index, 'copy');
 
 // Hauteur et haut de chaque image, lus dans les légendes de la page.
 async function partLayout(viewer) {
@@ -544,7 +546,7 @@ async function testRendering(context) {
         const viaMenu = viewer.getByRole('menuitem', { name: 'Copier l’image en pleine résolution' });
         found['clic droit'] = (await copyAndAnalyze(viewer, viaMenu, colorProbes, probe)).result[0];
 
-        const [single] = await download(context, viewer, second.getByRole('button', { name: 'Télécharger' }), 1);
+        const [single] = await download(context, viewer, partAction(viewer, 1, 'download'), 1);
         found['Télécharger'] = (await inImage(viewer, single, colorProbes, probe))[0];
 
         const files = await download(context, viewer, viewer.locator('#download-all'), 3);
@@ -716,7 +718,7 @@ async function testRendering(context) {
       return annotated(context, home, big, [rect], async (viewer) => {
         await viewer.getByRole('button', { name: 'JPG', exact: true }).click();
         try {
-          const [file] = await download(context, viewer, viewer.locator('figure.part').nth(0).getByRole('button', { name: 'Télécharger' }), 1);
+          const [file] = await download(context, viewer, partAction(viewer, 0, 'download'), 1);
           // Un JPG commence par FF D8 FF : sans cela, un PNG passerait aussi (la page relit n'importe quel format).
           const signature = (await fs.readFile(file)).subarray(0, 3).toString('hex');
           const [found] = await inImage(viewer, file, colorProbes, [{ x: 1196, y: 746, w: 8, h: 8, rgb: RED }]);
@@ -910,7 +912,7 @@ async function testRendering(context) {
 
 // ---- Éditeur : ouverture, fermeture, affichage fluide (tâche 3) ----
 
-const annotateButton = (viewer, index) => viewer.locator('figure.part').nth(index).getByRole('button', { name: 'Annoter', exact: true });
+const annotateButton = (viewer, index) => partAction(viewer, index, 'annotate');
 const editorReady = (viewer) => viewer.waitForSelector('#editor[data-ready="true"]', { timeout: 30_000 });
 
 // Ouvre l'éditeur par le bouton « Annoter » de l'image `index`, puis attend que la zone visible soit dessinée.
@@ -1047,7 +1049,7 @@ async function testEditor(context, base) {
             role: root.getAttribute('role'),
             modal: root.getAttribute('aria-modal'),
             focus: document.activeElement?.getAttribute('aria-label'),
-            behind: document.querySelector('.layout').inert,
+            behind: document.querySelector('.app-body').inert,
           };
         });
         const visible = await viewer.getByRole('dialog', { name: 'Annoter la capture' }).isVisible();
@@ -1079,26 +1081,26 @@ async function testEditor(context, base) {
         return { ok: placed, detail: `${cuts.length} coupes pour ${tops.length} images` };
       }));
 
-    await test('Terminer et Échap ferment l’éditeur', () =>
+    await test('Retour aux captures et Échap ferment l’éditeur', () =>
       withViewer(context, medium, async (viewer) => {
         const found = {};
         const closers = {
-          Terminer: () => viewer.getByRole('button', { name: 'Terminer', exact: true }).click(),
+          'Retour aux captures': () => viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click(),
           Échap: () => viewer.keyboard.press('Escape'),
         };
         for (const [label, close] of Object.entries(closers)) {
           await openEditorOn(viewer, 2);
           await close();
           await viewer.waitForSelector('#editor', { state: 'hidden' });
-          // Le focus revient au bouton « Annoter » de l'image d'origine, et plus rien de l'éditeur ne reste en mémoire.
+          // Le focus revient au bouton « ⋯ » de l'image d'origine, et plus rien de l'éditeur ne reste en mémoire.
           found[label] = await viewer.evaluate(() => ({
-            button: document.activeElement.textContent,
+            button: document.activeElement.getAttribute('aria-label'),
             figure: [...document.querySelectorAll('figure.part')].indexOf(document.activeElement.closest('figure.part')),
-            behind: document.querySelector('.layout').inert || document.querySelector('.top').inert,
+            behind: document.querySelector('.app-body').inert || document.querySelector('.app-header').inert,
             leftovers: document.querySelectorAll('#editor-stage canvas, .editor-tile, .editor-cut').length,
           }));
         }
-        const ok = Object.values(found).every((got) => got.button === 'Annoter' && got.figure === 2 && !got.behind && got.leftovers === 0);
+        const ok = Object.values(found).every((got) => got.button === 'Actions sur l’image 3' && got.figure === 2 && !got.behind && got.leftovers === 0);
         return { ok, detail: JSON.stringify(found) };
       }));
 
@@ -1193,10 +1195,12 @@ async function testEditor(context, base) {
         try {
           // Dans un même instant : le découpage « Court » démarre, puis on clique sur « Annoter » de l'ancienne image 2.
           during = await viewer.evaluate(() => {
-            const old = document.querySelectorAll('figure.part')[1].querySelector('.annotate');
+            // « Annoter » de l'image 2 passe par son bouton « ⋯ », puis l'élément du menu.
+            document.querySelectorAll('figure.part')[1].querySelector('.part-more').click();
+            const old = document.querySelector('#image-menu [data-action="annotate"]');
             [...document.querySelectorAll('#split button')].find((button) => button.textContent === 'Court').click();
             old.click();
-            return { disabled: old.disabled, menu: document.querySelector('#image-menu [data-action="annotate"]').disabled, opened: !document.getElementById('editor').hidden };
+            return { disabled: old.disabled, menu: old.disabled, opened: !document.getElementById('editor').hidden };
           });
           if (during.opened) await viewer.keyboard.press('Escape');
           await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
@@ -1319,9 +1323,9 @@ function inEditor(context, home, id, run, { index = 0, width } = {}) {
   });
 }
 
-// « Terminer » : l'éditeur se ferme, les coupes et les aperçus sont refaits.
+// « Retour aux captures » : l'éditeur se ferme, les coupes et les aperçus sont refaits.
 async function finish(viewer) {
-  await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+  await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
   await viewer.waitForSelector('#editor', { state: 'hidden' });
   await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
 }
@@ -1458,7 +1462,8 @@ async function testTools(context) {
         // Avec Maj enfoncé, la lettre est une majuscule : même outil.
         await viewer.keyboard.press('Shift+F');
         if ((await toolPressed(viewer)).join() !== 'Flèche') wrong.push('Maj+F');
-        const titles = await viewer.evaluate(() => [...document.querySelectorAll('.editor-tool')].map((button) => button.title));
+        // Info-bulle de l'outil (data-tip, affichée au survol et au focus, au lieu de l'attribut title).
+        const titles = await viewer.evaluate(() => [...document.querySelectorAll('.editor-group[data-kind="tool"] .editor-tool')].map((button) => button.dataset.tip));
         const hinted = titles.join() === 'Flèche (F),Rectangle (R),Surligneur (S),Texte (T),Pastille numérotée (N),Masquer (M),Crayon (C)';
         return { ok: wrong.length === 0 && hinted, detail: wrong.length ? wrong.join(' ; ') : titles.join(', ') };
       }));
@@ -1511,7 +1516,7 @@ async function testTools(context) {
     // 11 000 points = 22 000 px : trois images dont les coupes peuvent bouger.
     const loose = await seedCapture(home, { heightPoints: 11000 });
 
-    await test('rectangle à cheval sur une coupe, puis Terminer', () =>
+    await test('rectangle à cheval sur une coupe, puis Retour aux captures', () =>
       annotated(context, home, loose, [], async (viewer) => {
         const before = await partLayout(viewer);
         const cut = before.tops[1];
@@ -1904,8 +1909,8 @@ async function testTools(context) {
         await viewer.keyboard.press('m');
         await drag(viewer, { x: 60, y: 140 }, { x: 460, y: 220 });
         const creating = await viewer.evaluate(leavingIsBlocked);
-        // « Terminer » attend la fin de la création : l'éditeur est en cours de fermeture, la page reste retenue.
-        await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+        // « Retour aux captures » attend la fin de la création : l'éditeur est en cours de fermeture, la page reste retenue.
+        await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
         const closing = await viewer.evaluate(leavingIsBlocked);
         const items = await waitForItems(viewer, medium, 1);
         await viewer.waitForSelector('#editor', { state: 'hidden' });
@@ -3049,8 +3054,8 @@ async function testHistory(context, base) {
         await openEditorOn(viewer, 0);
         await viewer.keyboard.press('r');
         await drag(viewer, { x: 1000, y: 500 }, { x: 1600, y: 800 });
-        // « Terminer », puis aussitôt B dans l'historique (le clic attend que le calque se retire).
-        await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+        // « Retour aux captures », puis aussitôt B dans l'historique (le clic attend que le calque se retire).
+        await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
         await entryOf(viewer, b).click();
         await showing(viewer, b);
         // Laisser arriver tout ce que le recalcul de A pourrait encore faire.
@@ -3082,7 +3087,7 @@ async function testHistory(context, base) {
           await holdAnnotationStore(home, 4000);
           await drag(viewer, { x: 1000, y: 300 }, { x: 1600, y: 600 });
           await drag(viewer, { x: 1000, y: 900 }, { x: 1600, y: 1200 });
-          await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+          await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
           await viewer.waitForSelector('#editor', { state: 'hidden' });
           await viewer.evaluate(watchOpenings);
           await entryOf(viewer, b).click();
@@ -3123,7 +3128,7 @@ async function testHistory(context, base) {
           await holdAnnotationStore(home, 5000);
           await drag(viewer, { x: 1000, y: 300 }, { x: 1600, y: 600 });
           await drag(viewer, { x: 1000, y: 900 }, { x: 1600, y: 1200 });
-          await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+          await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
           await viewer.waitForSelector('#editor', { state: 'hidden' });
           await viewer.evaluate(watchOpenings);
           await entryOf(viewer, b).click();
@@ -3163,7 +3168,7 @@ async function testHistory(context, base) {
           await holdAnnotationStore(home, 5000);
           await drag(viewer, { x: 1000, y: 300 }, { x: 1600, y: 600 });
           await drag(viewer, { x: 1000, y: 900 }, { x: 1600, y: 1200 });
-          await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+          await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
           await viewer.waitForSelector('#editor', { state: 'hidden' });
           await viewer.evaluate(watchOpenings);
           await crossOf(viewer, a).click();
@@ -3889,17 +3894,18 @@ async function testFinish(context) {
           await viewer.keyboard.press(key);
           return viewer.evaluate(focusedStop);
         };
-        // Depuis le premier outil, Maj+Tab remonte jusqu'à Terminer ; Tab redescend ensuite jusqu'à la dernière taille.
+        // Depuis le premier outil, Maj+Tab remonte jusqu'à « Retour aux captures » ; Tab redescend ensuite jusqu'à « Tout effacer ».
+        // « Recadrer » suit les outils de dessin, « Tout effacer » est en bas de la colonne, « Télécharger » en haut.
         await viewer.locator('#editor-tools button').first().focus();
         const head = [];
-        for (let i = 0; i < 6; i++) head.unshift(await press('Shift+Tab'));
-        for (let i = 0; i < 6; i++) await viewer.keyboard.press('Tab');
+        for (let i = 0; i < 5; i++) head.unshift(await press('Shift+Tab'));
+        for (let i = 0; i < 5; i++) await viewer.keyboard.press('Tab');
         const tail = [await viewer.evaluate(focusedStop)];
-        for (let i = 1; i < TOOL_NAMES.length + COLOR_NAMES.length + SIZE_NAMES.length; i++) tail.push(await press('Tab'));
+        for (let i = 1; i < TOOL_NAMES.length + 1 + COLOR_NAMES.length + SIZE_NAMES.length + 1; i++) tail.push(await press('Tab'));
         const stops = [...head, ...tail];
-        const expected = ['Terminer', 'Annuler', 'Rétablir', 'Tout effacer', 'Recadrer', 'Copier l’image 1', ...TOOL_NAMES, ...COLOR_NAMES, ...SIZE_NAMES];
+        const expected = ['Retour aux captures', 'Annuler', 'Rétablir', 'Télécharger', 'Copier l’image 1', ...TOOL_NAMES, 'Recadrer', ...COLOR_NAMES, ...SIZE_NAMES, 'Tout effacer'];
 
-        // Après la dernière taille, la zone de la capture a le focus (contour visible) et Page suivante la fait défiler.
+        // Après « Tout effacer », la zone de la capture a le focus (contour visible) et Page suivante la fait défiler.
         const area = await press('Tab');
         const scrolledFrom = await viewer.evaluate(() => document.getElementById('editor-scroll').scrollTop);
         await viewer.keyboard.press('PageDown');
@@ -3910,7 +3916,7 @@ async function testFinish(context) {
 
         // Retour sur le dernier bouton de couleur : son anneau de focus se lit en clair comme en sombre.
         let swatch;
-        for (let i = 0; i < 4; i++) swatch = await press('Shift+Tab');
+        for (let i = 0; i < 5; i++) swatch = await press('Shift+Tab');
         try {
           for (const scheme of ['light', 'dark']) {
             await viewer.emulateMedia({ colorScheme: scheme });
@@ -4004,7 +4010,7 @@ async function testFinish(context) {
           const green = async (bytes) => (await viewer.evaluate(screenColors, { bytes: bytes.toString('base64'), probes: [GREEN] })).near[0];
           [greenBefore, greenDuring] = [await green(before), await green(during)];
 
-          // Page de résultats après « Terminer » : les aperçus portent les annotations.
+          // Page de résultats après « Retour aux captures » : les aperçus portent les annotations.
           await viewer.evaluate(scrollEditorTo, 0);
           await finish(viewer);
           const page = await shoot('viewer-annotated');
@@ -4039,7 +4045,7 @@ async function main() {
   const server = await serve(path.join(import.meta.dirname, 'pages'));
   const base = `http://127.0.0.1:${server.address().port}`;
   const context = await launch(extension, 'profile', WORK);
-  // D14 : toute requête vers un autre hôte que le serveur de test est refusée, et comptée.
+  // toute requête vers un autre hôte que le serveur de test est refusée, et comptée.
   const outside = [];
   await context.route(
     (url) => /^https?:$/.test(url.protocol) && url.hostname !== '127.0.0.1',

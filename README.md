@@ -4,17 +4,18 @@ A Chrome extension that captures a full web page in high resolution and splits i
 
 *The extension's interface is in French.*
 
-![Results page: a capture split into 3 images, with the choice of slice length and format](docs/images/resultats.png)
+![Results page: a full-page capture, with the choice of slice length and format, and the recent captures](docs/images/resultats.png)
 
 ## What it does
 
 - **Capture**: the full page, the visible part, a block (even one taller than the screen) or an area drawn with the mouse. Shortcuts: `Alt+Shift+F`, `Alt+Shift+V`, `Alt+Shift+Z`.
-- **See a page on three screens**: phone, tablet and desktop in a single action, in a separate tab.
+- **See a page on three screens**: phone, tablet and desktop in a single action, in a separate tab. The first time, a page explains Chrome's debugging banner before starting.
 - **Slice and export**: four slice lengths, in PNG, JPG or WebP, with export to a single PDF or a single zip.
-- **Annotate**: arrow, rectangle, highlighter, text, numbered marker, masking, freehand pen and cropping. The original stays untouched. A masked area becomes a mosaic in which no pixel depends on the hidden content: only its size and position remain visible.
-- **Convert images**: HEIC, PNG, JPG, WebP, AVIF, GIF and BMP in; JPG, PNG, WebP or a single PDF out. Images can be dropped or pasted.
+- **Annotate**: arrow, rectangle, highlighter, text, numbered marker, masking, freehand pen and cropping, then copy or download the annotated image. The original stays untouched. A masked area becomes a mosaic in which no pixel depends on the hidden content: only its size and position remain visible.
+- **Convert images**: HEIC, PNG, JPG, WebP, AVIF, GIF and BMP in; JPG, PNG, WebP or a single PDF out. Images can be dropped or pasted, and are converted as soon as they arrive.
 - **Save an image from a website**: right-click, then PNG or JPG.
 - **Transcribe a YouTube video**: from the video being watched or from a pasted link. The captions are read in a hidden, muted tab, then laid out without AI: a header (title, channel, date, duration, link, language), the video's chapters as headings, and timestamps per paragraph, per line or not at all. Copy it as Markdown or plain text, or download it as `.md`, `.txt` or `.srt`. The last 30 transcripts are kept in the history. The tab being watched is never touched.
+- **One interface for every screen** (version 0.7.0): warm grey and terracotta, light and dark modes following the system, the same header and settings column on every page, one icon set, and contrast checked automatically with axe on every screen.
 
 | Extension window | Annotation editor |
 |---|---|
@@ -63,7 +64,7 @@ Captures stay in the browser: nothing is sent to a server belonging to the exten
 
 ## Tests
 
-9 Playwright suites, 866 checks as of 18 November 2026 on the working repository, including pixel-by-pixel checks of the images produced. The details, and what was re-run on this copy, are in [`docs/methode.md`](docs/methode.md). They need macOS, poppler (`pdfinfo`, `pdftoppm`), `unzip`, Python and a git clone with its tags. They run one at a time:
+10 Playwright suites, 1,005 checks as of 19 November 2026, all re-run on this copy, including pixel-by-pixel checks of the images produced and an axe accessibility audit of every screen in light and dark mode. The details are in [`docs/methode.md`](docs/methode.md). They need macOS, poppler (`pdfinfo`, `pdftoppm`), `unzip`, Python and a git clone with its tags. They run one at a time:
 
 ```bash
 cd tests
@@ -72,7 +73,7 @@ pnpm exec playwright install chromium
 node convert.mjs /tmp/capture-tests
 ```
 
-The other suites are `e2e.mjs`, `annotate.mjs`, `lot1.mjs` to `lot4.mjs`, `transcription.mjs` and `e2e-2026-10-31-etape1-validee.mjs`. `transcription.mjs` serves imitation YouTube pages; its `reel` group reads real YouTube videos and only runs when named. The last one replays the checks of the first stage on the current code. The `extension-2026-10-31-etape1-validee/` folder is only a preserved copy of the first-stage code.
+The other suites are `design.mjs` (the design system: tokens, contrast, layout, axe), `e2e.mjs`, `annotate.mjs`, `lot1.mjs` to `lot4.mjs`, `transcription.mjs` and `e2e-2026-10-31-etape1-validee.mjs`. `transcription.mjs` serves imitation YouTube pages; its `reel` group reads real YouTube videos and only runs when named. The last one replays the checks of the first stage on the current code. The `extension-2026-10-31-etape1-validee/` folder is only a preserved copy of the first-stage code.
 
 ## History
 

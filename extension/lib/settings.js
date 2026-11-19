@@ -4,14 +4,14 @@ export const DEFAULTS = { split: 'medium', format: 'png', transcriptTimes: 'para
 
 // Options de la page de transcription : repères de temps et format. La langue n'est pas retenue (elle dépend de la vidéo).
 export const TRANSCRIPT_TIMES = {
-  paragraph: { label: 'Par paragraphe' },
-  cue: { label: 'À chaque passage' },
+  paragraph: { label: 'Paragraphes' },
+  cue: { label: 'Passages' },
   none: { label: 'Aucun' },
 };
 
 export const TRANSCRIPT_FORMATS = {
   markdown: { label: 'Markdown' },
-  text: { label: 'Texte simple' },
+  text: { label: 'Texte' },
 };
 
 // Hauteur maximale d'une image, en points de page (×2 en pixels sur un écran Retina).

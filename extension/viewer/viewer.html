@@ -5,30 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Captures</title>
     <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="../ui/components.css" />
     <link rel="stylesheet" href="viewer.css" />
     <link rel="stylesheet" href="../annotate/editor.css" />
   </head>
   <body>
-    <header class="top">
-      <div class="brand">
-        <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
-          <rect width="24" height="24" rx="5.4" fill="#23453b" />
-          <rect x="3.5" y="7.7" width="17" height="11.3" rx="1.9" fill="#fff" />
-          <path d="M8.7 5.6h6.6l1.4 2.4H7.3z" fill="#fff" />
-          <circle cx="12" cy="13.4" r="4" fill="#23453b" />
-          <circle cx="12" cy="13.4" r="2.6" fill="#f4c542" />
-          <circle cx="18" cy="9.9" r="0.7" fill="#23453b" />
-        </svg>
-        <span>Capture</span>
-      </div>
+    <header class="app-header">
+      <div class="brand"><span data-logo></span><span>Capture</span></div>
       <div class="heading">
-        <h1 id="title">Captures</h1>
-        <p id="meta" class="meta"></p>
-        <p id="save-alert" class="save-alert" role="alert" hidden></p>
+        <h1 id="title" class="app-header-title">Captures</h1>
+        <p id="meta" class="meta num"></p>
       </div>
-      <div class="top-actions">
-        <span id="export-progress" class="export-progress" role="status" hidden></span>
+      <div class="app-header-actions">
+        <span id="export-progress" class="export-progress num" role="status" hidden></span>
         <button id="export-cancel" class="btn-secondary" type="button" hidden>Annuler</button>
+        <button id="annotate-current" class="btn-secondary annotate" type="button" disabled><span data-icon="annotate"></span><span class="label">Annoter l’image</span></button>
         <button id="copy-current" class="btn-secondary" type="button" disabled>Copier l’image</button>
         <div class="export-wrap">
           <button id="export" class="btn-secondary" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu" disabled>Exporter</button>
@@ -41,13 +32,14 @@
         <button id="download-all" class="btn-primary" type="button" disabled>Tout télécharger</button>
       </div>
     </header>
+    <p id="save-alert" class="banner is-error save-alert" role="alert" hidden></p>
 
-    <div class="layout">
-      <aside class="panel">
+    <div class="app-body">
+      <aside class="app-side panel">
         <section>
           <h2 id="split-label">Découpage</h2>
           <div id="split" class="segmented" role="group" aria-labelledby="split-label"></div>
-          <p id="split-hint" class="hint"></p>
+          <p id="split-hint" class="hint num"></p>
         </section>
         <section>
           <h2 id="format-label">Format</h2>
@@ -60,12 +52,12 @@
         </section>
       </aside>
 
-      <main id="mat" class="mat">
+      <main id="mat" class="app-main mat">
         <div id="device-tabs" class="device-tabs" role="tablist" aria-label="Appareil" hidden></div>
-        <p id="notice" class="notice" hidden>
+        <p id="notice" class="banner is-info notice" hidden>
           Page très longue : la capture s'arrête à 100 000 points de haut.
         </p>
-        <p id="partial-notice" class="notice" hidden></p>
+        <p id="partial-notice" class="banner is-info notice" hidden></p>
         <div id="parts" class="parts"></div>
       </main>
     </div>
@@ -79,27 +71,23 @@
     <div id="editor" class="editor" role="dialog" aria-modal="true" aria-labelledby="editor-title" hidden>
       <header class="editor-head">
         <div class="editor-bar">
-          <button id="editor-close" class="btn-secondary editor-close" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
-            Terminer
-          </button>
+          <button id="editor-close" class="btn-secondary editor-close" type="button"><span data-icon="back"></span>Retour aux captures</button>
           <h2 id="editor-title" class="editor-title">Annoter la capture</h2>
           <div class="editor-history">
-            <button class="editor-icon" type="button" aria-label="Annuler" title="Annuler (⌘Z)" disabled>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5" /><path d="M4 9h10a6 6 0 0 1 0 12h-3" /></svg>
-            </button>
-            <button class="editor-icon" type="button" aria-label="Rétablir" title="Rétablir (⇧⌘Z)" disabled>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5" /><path d="M20 9H10a6 6 0 0 0 0 12h3" /></svg>
-            </button>
+            <button class="btn-icon" type="button" aria-label="Annuler" title="Annuler (⌘Z)" disabled><span data-icon="undo"></span></button>
+            <button class="btn-icon" type="button" aria-label="Rétablir" title="Rétablir (⇧⌘Z)" disabled><span data-icon="redo"></span></button>
           </div>
-          <button id="editor-trim" class="btn-secondary" type="button" aria-pressed="false">Recadrer</button>
+          <button id="editor-download" class="btn-secondary" type="button"><span data-icon="download"></span>Télécharger</button>
           <button id="editor-copy" class="btn-primary" type="button">Copier l’image</button>
         </div>
         <p id="editor-alert" class="save-alert" role="alert" hidden></p>
       </header>
       <div class="editor-body">
-        <div id="editor-tools" class="editor-tools"></div>
-        <div id="editor-scroll" class="editor-scroll">
+        <div id="editor-tools" class="editor-tools">
+          <button id="editor-trim" class="editor-tool editor-trim" type="button" aria-pressed="false" aria-label="Recadrer"><span data-icon="trim" data-size="20"></span></button>
+        </div>
+        <div id="editor-tip" class="editor-tip" role="tooltip" hidden></div>
+        <div id="editor-scroll" class="editor-scroll" tabindex="0" role="region" aria-label="Capture à annoter">
           <div class="editor-stage-host"><div id="editor-stage" class="editor-stage"></div></div>
           <div id="editor-page" class="editor-page"></div>
           <div id="editor-trim-layer" class="editor-trim-layer" hidden>

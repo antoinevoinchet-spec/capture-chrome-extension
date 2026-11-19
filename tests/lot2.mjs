@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { EXTENSION, MANIFEST_EXPECTED, check, extensionPage, launch, prepareExtension, results, seedCapture } from './lib.mjs';
+import { EXTENSION, MANIFEST_EXPECTED, check, extensionPage, launch, partAction, prepareExtension, results, seedCapture } from './lib.mjs';
 
 const run = promisify(execFile);
 const WORK = path.resolve(process.argv[2] ?? path.join(import.meta.dirname, 'out-lot2'));
@@ -19,6 +19,8 @@ async function test(name, body) {
     const { ok, detail } = await body();
     check(name, ok, detail);
   } catch (err) {
+    // DEBUG=1 : le message complet de Playwright (ce qui bloque un clic, par exemple).
+    if (process.env.DEBUG) console.error(err);
     check(name, false, String(err.message ?? err).split('\n')[0].slice(0, 240));
   }
 }
@@ -455,7 +457,8 @@ async function groupRendu(context) {
 
 // --- Le bouton « Recadrer » ---
 
-const annotateButton = (viewer, index = 0) => viewer.locator('figure.part').nth(index).getByRole('button', { name: 'Annoter', exact: true });
+// « Annoter » d'une image passe par son bouton « ⋯ ».
+const annotateButton = (viewer, index = 0) => partAction(viewer, index, 'annotate');
 const editorReady = (viewer) => viewer.waitForSelector('#editor[data-ready="true"]', { timeout: 30_000 });
 const trimButton = (viewer) => viewer.locator('#editor-trim');
 const handle = (viewer, edge) => viewer.locator(`#editor-trim-box [data-edge="${edge}"]`);
@@ -525,12 +528,14 @@ async function groupBouton(context) {
   // Chaque contrôle a sa capture : un cadrage validé s'enregistre désormais et suivrait le contrôle suivant.
   const cleanEditor = async (run) => inEditor(context, await seedCapture(home, { heightPoints: 900 }), run);
   try {
-    await test('bouton : placé après « Tout effacer » et avant « Copier l’image », hors des outils', () =>
+    // « Recadrer » rejoint la colonne d'outils, sous les outils de dessin.
+    await test('bouton : dans la colonne d’outils, sous les outils de dessin', () =>
       cleanEditor(async (viewer) => {
         const order = await viewer.evaluate(() => [...document.querySelectorAll('.editor-bar button')].map((el) => el.getAttribute('aria-label') ?? el.textContent.trim()));
         const inTools = await viewer.locator('#editor-tools #editor-trim').count();
-        const wanted = ['Terminer', 'Annuler', 'Rétablir', 'Tout effacer', 'Recadrer', 'Copier l’image'];
-        return { ok: same(order, wanted) && inTools === 0, detail: order.join(', ') };
+        const afterTools = await viewer.evaluate(() => document.getElementById('editor-trim').parentElement.previousElementSibling?.dataset.kind);
+        const wanted = ['Retour aux captures', 'Annuler', 'Rétablir', 'Télécharger', 'Copier l’image'];
+        return { ok: same(order, wanted) && inTools === 1 && afterTools === 'tool', detail: `${order.join(', ')} ; colonne ${inTools}, après ${afterTools}` };
       }),
     );
 
@@ -703,7 +708,7 @@ async function groupBouton(context) {
 
     await test('bouton : les 7 outils ne bougent pas', () =>
       cleanEditor(async (viewer) => {
-        const tools = await viewer.evaluate(() => [...document.querySelectorAll('.editor-group[data-kind="tool"] button')].map((el) => el.title));
+        const tools = await viewer.evaluate(() => [...document.querySelectorAll('.editor-group[data-kind="tool"] button')].map((el) => el.dataset.tip));
         const wanted = ['Flèche (F)', 'Rectangle (R)', 'Surligneur (S)', 'Texte (T)', 'Pastille numérotée (N)', 'Masquer (M)', 'Crayon (C)'];
         return { ok: same(tools, wanted), detail: tools.join(', ') };
       }),
@@ -711,7 +716,7 @@ async function groupBouton(context) {
 
     await test('bouton : pendant le réglage, les lettres d’outil et la marge grise n’agissent pas', () =>
       cleanEditor(async (viewer) => {
-        const pressed = () => viewer.evaluate(() => document.querySelector('.editor-group[data-kind="tool"] [aria-pressed="true"]').title);
+        const pressed = () => viewer.evaluate(() => document.querySelector('.editor-group[data-kind="tool"] [aria-pressed="true"]').dataset.tip);
         const before = await pressed();
         await startTrim(viewer);
         await viewer.keyboard.press('r');
@@ -728,13 +733,13 @@ async function groupBouton(context) {
       }),
     );
 
-    await test('bouton : Terminer pendant le réglage abandonne le cadre en cours', () =>
+    await test('bouton : Retour aux captures pendant le réglage abandonne le cadre en cours', () =>
       seedCapture(home, { heightPoints: 900 }).then((id) => withViewer(context, id, async (viewer) => {
         await annotateButton(viewer).click();
         await editorReady(viewer);
         await startTrim(viewer);
         await viewer.keyboard.press('Shift+ArrowDown');
-        await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+        await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
         await viewer.waitForSelector('#editor', { state: 'hidden' });
         await annotateButton(viewer).click();
         await editorReady(viewer);
@@ -918,7 +923,7 @@ const quickTrim = async (viewer, text) => {
   await waitTrim(viewer, text);
 };
 const finishEditor = async (viewer) => {
-  await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+  await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
   await viewer.waitForSelector('#editor', { state: 'hidden' });
   await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
 };
@@ -962,7 +967,7 @@ async function groupChemins(context) {
     );
     await test('chemin 4 : téléchargement d’une image', () =>
       opened(async (viewer) => {
-        const [file] = await downloaded(context, viewer, () => viewer.locator('.part-save').first().click(), 1);
+        const [file] = await downloaded(context, viewer, () => partAction(viewer, 0, 'download').click(), 1);
         const info = await analyzeFile(viewer, file);
         return { ok: fileOk(info, trim) && info.height === trim.h, detail: JSON.stringify(info) };
       }),
@@ -1061,7 +1066,7 @@ async function groupChemins(context) {
       }),
     );
 
-    // Une capture neuve, recadrée à la main dans l'éditeur, sans « Terminer ».
+    // Une capture neuve, recadrée à la main dans l'éditeur, sans « Retour aux captures ».
     const fresh = await seedSentinel(home, scale);
     const untilCopied = async (viewer, act) => {
       for (let attempt = 0; attempt < 40; attempt++) {
@@ -1071,7 +1076,7 @@ async function groupChemins(context) {
       }
       throw new Error('copie toujours refusée');
     };
-    await test('chemin 10 bis : #editor-copy juste après Entrée, sans Terminer', () =>
+    await test('chemin 10 bis : #editor-copy juste après Entrée, sans Retour aux captures', () =>
       withViewer(context, fresh, async (viewer) => {
         await annotateButton(viewer).click();
         await editorReady(viewer);
@@ -1084,7 +1089,7 @@ async function groupChemins(context) {
         return { ok: info.width === trim.w && info.height === trim.h && info.sentinel === 0, detail: JSON.stringify(info) };
       }),
     );
-    await test('chemin 11 bis : ⌘C juste après Entrée, sans Terminer', () =>
+    await test('chemin 11 bis : ⌘C juste après Entrée, sans Retour aux captures', () =>
       withViewer(context, fresh, async (viewer) => {
         await annotateButton(viewer).click();
         await editorReady(viewer);
@@ -1170,7 +1175,7 @@ async function groupChemins(context) {
           await second.bringToFront();
           await second.waitForFunction((w) => document.querySelector('figure.part .part-size')?.textContent.replace(/\D/g, '').startsWith(String(w)), trim.w, { timeout: 15_000 });
           await second.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
-          const [file] = await downloaded(context, second, () => second.locator('.part-save').first().click(), 1);
+          const [file] = await downloaded(context, second, () => partAction(second, 0, 'download').click(), 1);
           const info = await analyzeFile(second, file);
           const [[width, height]] = await partSizes(second);
           return { ok: fileOk(info, trim) && width === trim.w && height === trim.h, detail: `${JSON.stringify(info)} ; légende ${width} × ${height}` };
@@ -1487,7 +1492,7 @@ async function groupRelecture(context) {
         await onScreenSplit(viewer);
         await slowDown(viewer, 'renderPreview', 500);
         await viewer.locator(`.history-item[data-id="${long}"]`).click();
-        await viewer.waitForFunction(() => document.querySelectorAll('figure.part .annotate:not(:disabled)').length === 2, null, { timeout: 15_000 });
+        await viewer.waitForFunction(() => document.querySelectorAll('figure.part').length === 2 && !document.getElementById('annotate-current').disabled, null, { timeout: 15_000 });
         await annotateButton(viewer).click();
         await viewer.waitForSelector('#editor:not([hidden])');
         await viewer.locator('#editor-trim-reset').click();
@@ -1496,7 +1501,7 @@ async function groupRelecture(context) {
         await viewer.waitForTimeout(1500);
         await drawArrow(viewer);
         const stored = await storedWhen(home, long, (edits) => edits.items.length === 1);
-        await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+        await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
         await viewer.waitForSelector('#editor', { state: 'hidden', timeout: 30_000 });
         await viewer.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
         const title = await viewer.locator('#parts h2').count();
@@ -1655,7 +1660,7 @@ async function groupRelecture(context) {
       });
     });
 
-    await test('relecture : « Terminer » pendant le recalcul le dit, et l’ancien aperçu ne reste pas à l’écran', async () => {
+    await test('relecture : « Retour aux captures » pendant le recalcul le dit, et l’ancien aperçu ne reste pas à l’écran', async () => {
       const target = await seedSentinel(home, scale);
       return withViewer(context, target, async (viewer) => {
         await annotateButton(viewer).click();
@@ -1665,7 +1670,7 @@ async function groupRelecture(context) {
         await viewer.keyboard.press('Enter');
         await viewer.waitForTimeout(100);
         await viewer.evaluate(() => (document.getElementById('toast').hidden = true));
-        await viewer.getByRole('button', { name: 'Terminer', exact: true }).click();
+        await viewer.getByRole('button', { name: 'Retour aux captures', exact: true }).click();
         await toastSays(viewer, 'se ferme dans un instant');
         await viewer.waitForSelector('#editor', { state: 'hidden', timeout: 20_000 });
         const during = await viewer.evaluate(`[...document.querySelectorAll('.sheet canvas')].map(${greenishPixels})`);

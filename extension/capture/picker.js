@@ -39,9 +39,11 @@ export function pickerStart(startMode) {
   // Feuille construite : elle passe aussi sur une page dont la politique de sécurité refuse les styles écrits en texte.
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(`
-    :host { --edge: #f4c542; --shade: #23453b; --bubble: #ffffff; --bubble-ink: #15211d; --veil: rgb(21 33 29 / 0.28); }
+    /* hors tokens : calque posé sur un site, qui ne charge pas ui/tokens.css ; valeurs recopiées des rôles --accent,
+       --surface et --text (terre cuite sur papier). Le liseré blanc détache le cadre d'une page sombre. */
+    :host { --edge: #b4532f; --shade: #ffffff; --bubble: #fdfcfb; --bubble-ink: #2b2925; --veil: rgb(43 41 37 / 0.28); }
     @media (prefers-color-scheme: dark) {
-      :host { --bubble: #1b2420; --bubble-ink: #e6ede9; --veil: rgb(0 0 0 / 0.42); }
+      :host { --bubble: #2a2826; --bubble-ink: #f0eeea; --veil: rgb(0 0 0 / 0.42); }
     }
     .frame {
       position: fixed;
@@ -60,7 +62,7 @@ export function pickerStart(startMode) {
       max-width: min(620px, calc(100vw - 28px));
       padding: 8px 14px;
       border-radius: 9px;
-      font: 13px/1.4 "Avenir Next", Avenir, system-ui, sans-serif;
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
       text-align: center;
       color: var(--bubble-ink);
       background: var(--bubble);

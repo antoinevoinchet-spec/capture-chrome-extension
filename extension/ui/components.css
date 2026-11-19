@@ -1,0 +1,582 @@
+/* Composants partagés du design system. Liés après tokens.css, avant la feuille de l'écran.
+   N'utilise que les rôles et les échelles de tokens.css. Les classes .is-hover et .is-active forcent
+   les états « survol » et « appui » pour la page de démonstration (ui/demo.html). */
+
+/* ---------- Boutons ---------- */
+
+.btn,
+.btn-primary,
+.btn-secondary,
+.btn-quiet,
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: var(--control-s);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  font-size: var(--text-13);
+  font-weight: var(--weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  color: var(--text);
+  background: transparent;
+  transition: background-color 120ms, border-color 120ms, color 120ms;
+}
+
+.btn-l {
+  height: var(--control-l);
+  padding: 0 var(--space-4);
+  font-size: var(--text-14);
+}
+
+.btn-primary {
+  color: var(--primary-fg);
+  background: var(--primary-bg);
+}
+
+.btn-primary:not(:disabled):is(:hover, .is-hover) {
+  background: var(--primary-bg-hover);
+}
+
+.btn-primary:not(:disabled):is(:active, .is-active) {
+  background: var(--primary-bg);
+  transform: translateY(1px);
+}
+
+.btn-secondary {
+  border-color: var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.btn-secondary:not(:disabled):is(:hover, .is-hover) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.btn-secondary:not(:disabled):is(:active, .is-active) {
+  background: var(--surface-active);
+  box-shadow: none;
+}
+
+.btn-quiet {
+  color: var(--text-muted);
+}
+
+.btn-quiet:not(:disabled):is(:hover, .is-hover),
+.btn-icon:not(:disabled):is(:hover, .is-hover) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.btn-quiet:not(:disabled):is(:active, .is-active),
+.btn-icon:not(:disabled):is(:active, .is-active) {
+  background: var(--surface-active);
+}
+
+.btn-icon {
+  width: var(--control-s);
+  padding: 0;
+  color: var(--text-muted);
+}
+
+.btn-icon.btn-l {
+  width: var(--control-l);
+}
+
+/* En cours : un petit anneau tourne avant le libellé, le bouton ne répond plus. */
+[aria-busy="true"]:is(.btn, .btn-primary, .btn-secondary, .btn-quiet, .btn-icon) {
+  cursor: progress;
+  pointer-events: none;
+}
+
+[aria-busy="true"]:is(.btn, .btn-primary, .btn-secondary, .btn-quiet, .btn-icon)::before {
+  content: "";
+  width: var(--space-3);
+  height: var(--space-3);
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ds-spin 700ms linear infinite;
+}
+
+@keyframes ds-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* ---------- Panneau : action principale, tuiles, lignes de liste ---------- */
+
+.action-main {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  border-radius: var(--radius-l);
+  text-align: left;
+  color: var(--primary-fg);
+  background: var(--primary-bg);
+}
+
+.action-main:not(:disabled):is(:hover, .is-hover) {
+  background: var(--primary-bg-hover);
+}
+
+.action-main:not(:disabled):is(:active, .is-active) {
+  transform: translateY(1px);
+}
+
+.action-main .action-title {
+  display: block;
+  font-size: var(--text-14);
+  font-weight: var(--weight-semibold);
+}
+
+.action-main .action-desc {
+  display: block;
+  font-size: var(--text-12);
+  color: color-mix(in oklch, var(--primary-fg) 72%, var(--primary-bg));
+}
+
+.action-main kbd {
+  border-color: color-mix(in oklch, var(--primary-fg) 35%, var(--primary-bg));
+  color: color-mix(in oklch, var(--primary-fg) 80%, var(--primary-bg));
+  background: transparent;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-3) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  font-size: var(--text-13);
+  font-weight: var(--weight-medium);
+  color: var(--text);
+  background: var(--surface);
+}
+
+.tile .icon {
+  color: var(--accent);
+}
+
+.tile:not(:disabled):is(:hover, .is-hover) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.tile:not(:disabled):is(:active, .is-active) {
+  background: var(--surface-active);
+}
+
+.tile kbd {
+  font-size: var(--text-11);
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--control-l);
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-m);
+  text-align: left;
+  font-size: var(--text-13);
+  color: var(--text);
+  background: transparent;
+}
+
+.list-row > .icon:first-child {
+  flex: none;
+  color: var(--accent);
+}
+
+.list-row-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-row-meta {
+  display: block;
+  font-size: var(--text-12);
+  color: var(--text-muted);
+}
+
+.list-row > .icon-chevron {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.list-row:not(:disabled):is(:hover, .is-hover) {
+  background: var(--surface-hover);
+}
+
+.list-row:not(:disabled):is(:active, .is-active) {
+  background: var(--surface-active);
+}
+
+/* ---------- Contrôle segmenté ---------- */
+
+.segmented {
+  display: flex;
+  gap: 0; /* le bouton choisi se détache par son fond : sans écart, « Paragraphes | Passages | Aucun » tient en 208 px */
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--bg-subtle);
+}
+
+/* Largeur selon le libellé, puis partage de la place restante : les libellés réels tiennent dans la colonne de 240 px. */
+.segmented button {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: calc(var(--control-s) - 6px);
+  border: 0;
+  border-radius: var(--radius-s);
+  padding: 0 var(--space-1);
+  font-size: var(--text-13);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.segmented button:not(:disabled):is(:hover, .is-hover) {
+  color: var(--text);
+}
+
+.segmented button[aria-pressed="true"] {
+  color: var(--accent-text);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+/* ---------- Champs ---------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-13);
+}
+
+.field-label {
+  font-weight: var(--weight-medium);
+  color: var(--text);
+}
+
+.input,
+.select {
+  width: 100%;
+  height: var(--control-s);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+.input:not(:disabled):is(:hover, .is-hover),
+.select:not(:disabled):is(:hover, .is-hover) {
+  border-color: var(--text-muted);
+}
+
+.input:focus-visible,
+.select:focus-visible,
+.input.is-focus {
+  outline: 2px solid var(--focus);
+  outline-offset: -1px;
+  border-color: var(--focus);
+}
+
+.input:disabled,
+.select:disabled {
+  opacity: 0.55;
+  background: var(--bg-subtle);
+}
+
+.field-message {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-12);
+  color: var(--text-muted);
+}
+
+.field.is-error .input,
+.field.is-error .select {
+  border-color: var(--danger);
+}
+
+.field.is-error .field-message {
+  color: var(--danger);
+}
+
+/* ---------- Zone de dépôt ---------- */
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-5);
+  border: 1.5px dashed var(--border-strong); /* hors tokens : pointillé fin de la zone de dépôt */
+  border-radius: var(--radius-l);
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.dropzone > .icon {
+  color: var(--accent);
+}
+
+.dropzone:is(:hover, .is-hover) {
+  background: var(--surface-hover);
+}
+
+.dropzone.is-over {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent-subtle);
+}
+
+.dropzone.is-error {
+  border-color: var(--danger);
+}
+
+.dropzone[aria-disabled="true"] {
+  opacity: 0.55;
+}
+
+/* ---------- Petits éléments ---------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-xl);
+  font-size: var(--text-12);
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-text);
+  background: var(--accent-subtle);
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  font: inherit;
+  font-size: var(--text-12);
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  white-space: nowrap;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: var(--space-5);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: min(480px, calc(100vw - var(--space-6))); /* hors tokens : largeur d'un message */
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  min-height: var(--control-l);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  font-size: var(--text-13);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  transform: translateX(-50%);
+}
+
+.toast > .icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.toast.is-error > .icon {
+  color: var(--danger);
+}
+
+.progress {
+  position: relative;
+  height: var(--space-1);
+  overflow: hidden;
+  border-radius: var(--radius-s);
+  background: var(--bg-subtle);
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 200ms;
+}
+
+.progress.is-indeterminate .progress-bar {
+  width: 40%;
+  animation: ds-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes ds-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-m);
+  font-size: var(--text-13);
+  color: var(--text);
+  background: var(--bg-subtle);
+}
+
+.banner > .icon {
+  flex: none;
+  margin-top: 1px;
+}
+
+.banner.is-info {
+  background: var(--accent-subtle);
+}
+
+.banner.is-info > .icon {
+  color: var(--accent-text);
+}
+
+.banner.is-error {
+  background: var(--danger-subtle);
+}
+
+.banner.is-error > .icon {
+  color: var(--danger);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-7) var(--space-5);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.empty > .icon {
+  color: var(--accent);
+}
+
+.empty-title {
+  margin: 0;
+  font-size: var(--text-16);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
+}
+
+/* ---------- Gabarit de page ---------- */
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--header-h);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.app-header-title {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--text-16);
+  font-weight: var(--weight-semibold);
+  line-height: 1.2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.app-header-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.app-body {
+  display: flex;
+  min-height: calc(100vh - var(--header-h));
+}
+
+.app-side {
+  flex: none;
+  width: var(--side-w);
+  padding: var(--space-4);
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Texte réservé aux lecteurs d'écran. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.logo {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}

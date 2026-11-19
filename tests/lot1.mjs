@@ -159,7 +159,7 @@ async function groupPaste(context) {
       const a = await tinyImage(page, { width: 11, height: 11 });
       const b = await tinyImage(page, { width: 22, height: 22 });
       await paste(page, { files: [{ name: 'image.png', type: 'image/png', base64: a }, { name: 'image.png', type: 'image/png', base64: b }] });
-      await page.locator('#convert').click();
+      // la conversion part au collage, sans clic.
       await page.waitForFunction(() => document.querySelectorAll('.item[data-status="done"]').length === 2, undefined, { timeout: 30_000 });
       const details = await page.evaluate(() => [...document.querySelectorAll('.item-detail')].map((el) => el.textContent));
       return { ok: details[0].startsWith('11 × 11') && details[1].startsWith('22 × 22'), detail: details.join(' | ') };
@@ -184,7 +184,8 @@ async function groupPaste(context) {
       const focused = await page.evaluate(() => document.activeElement?.id);
       await paste(page, { files: [{ name: 'image.png', type: 'image/png', base64 }] });
       const names = await itemNames(page);
-      return { ok: focused === 'files' && names.length === 1, detail: `focus ${focused}, ${names.length} ligne` };
+      // après « Tout retirer », le focus va au bouton « Choisir des fichiers ».
+      return { ok: focused === 'choose' && names.length === 1, detail: `focus ${focused}, ${names.length} ligne` };
     }));
   await test('collage : le champ Largeur garde son collage', () =>
     session(async (page) => {
@@ -239,7 +240,7 @@ async function groupPaste(context) {
     session(async (page) => {
       const base64 = await tinyImage(page, { width: 3000, height: 3000 });
       await paste(page, { files: [{ name: 'image.png', type: 'image/png', base64 }] });
-      await page.locator('#convert').click();
+      // la conversion part au collage.
       await page.waitForFunction(() => document.body.dataset.state === 'running');
       await paste(page, { files: [{ name: 'image.png', type: 'image/png', base64 }] });
       const message = await toastText(page);
@@ -1349,6 +1350,7 @@ async function groupWebImage() {
       const popup = await extensionPage(context, 'popup/popup.html');
       const words = await popup.locator('body').textContent();
       await popup.close();
+      // l'astuce tient en une ligne ; la phrase reste dans son info-bulle et pour les lecteurs d'écran.
       return { ok: /image animée devient fixe/.test(words), detail: words.match(/[^.]*image animée[^.]*\./)?.[0]?.trim() ?? 'absente' };
     });
 

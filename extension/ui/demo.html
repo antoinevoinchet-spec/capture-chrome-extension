@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Capture : composants</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="components.css" />
+    <style>
+      /* Mise en page de la démonstration seulement (page non déclarée dans le manifeste). */
+      .demo { max-width: 1040px; margin: 0 auto; padding: var(--space-6) var(--space-5) var(--space-7); }
+      .demo section { margin-top: var(--space-6); }
+      .demo h2 { margin: 0 0 var(--space-3); font-size: var(--text-16); }
+      .demo .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
+      .demo .caption { width: 100%; margin: 0; font-size: var(--text-12); color: var(--text-muted); }
+      .demo .panel { width: 340px; padding: var(--space-3); border: 1px solid var(--border); background: var(--bg); }
+      .demo .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); }
+      .demo .narrow { width: 300px; }
+      .demo .side-width { width: calc(var(--side-w) - 2 * var(--space-4)); }
+      .demo .fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); }
+      .demo .toast { position: static; transform: none; }
+      .demo .frame { border: 1px solid var(--border); border-radius: var(--radius-m); overflow: hidden; }
+      .demo .frame .app-body { min-height: 160px; }
+      .demo .icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: var(--space-2); }
+      .demo .icons figure { display: flex; flex-direction: column; align-items: center; gap: var(--space-1); margin: 0; padding: var(--space-2); font-size: var(--text-12); color: var(--text-muted); }
+      .demo .icons .icon { color: var(--text); }
+    </style>
+  </head>
+  <body>
+    <main class="demo">
+      <h1 class="text-28">Composants</h1>
+      <p>Chaque composant du design system, dans chacun de ses états. En clair et en sombre selon le réglage du système.</p>
+
+      <section aria-labelledby="h-buttons">
+        <h2 id="h-buttons">Boutons</h2>
+        <div class="row">
+          <p class="caption">Primaire : repos, survol, appui, désactivé, en cours, grand</p>
+          <button class="btn-primary" type="button">Télécharger</button>
+          <button class="btn-primary is-hover" type="button">Télécharger</button>
+          <button class="btn-primary is-active" type="button">Télécharger</button>
+          <button class="btn-primary" type="button" disabled>Télécharger</button>
+          <button class="btn-primary" type="button" aria-busy="true">Téléchargement</button>
+          <button class="btn-primary btn-l" type="button">Transcrire</button>
+        </div>
+        <div class="row">
+          <p class="caption">Secondaire</p>
+          <button class="btn-secondary" type="button"><span data-icon="copy"></span>Copier l'image</button>
+          <button class="btn-secondary is-hover" type="button">Copier</button>
+          <button class="btn-secondary is-active" type="button">Copier</button>
+          <button class="btn-secondary" type="button" disabled>Copier</button>
+          <button class="btn-secondary" type="button" aria-busy="true">Copie</button>
+        </div>
+        <div class="row">
+          <p class="caption">Discret et icône seule</p>
+          <button class="btn-quiet" type="button">Annuler</button>
+          <button class="btn-quiet is-hover" type="button">Annuler</button>
+          <button class="btn-quiet" type="button" disabled>Annuler</button>
+          <button class="btn-icon" type="button" aria-label="Actions"><span data-icon="more"></span></button>
+          <button class="btn-icon is-hover" type="button" aria-label="Annuler l'action"><span data-icon="undo"></span></button>
+          <button class="btn-icon is-active" type="button" aria-label="Rétablir l'action"><span data-icon="redo"></span></button>
+          <button class="btn-icon" type="button" aria-label="Fermer" disabled><span data-icon="close"></span></button>
+        </div>
+      </section>
+
+      <section aria-labelledby="h-panel">
+        <h2 id="h-panel">Panneau : action principale, tuiles, liste</h2>
+        <div class="panel">
+          <button class="action-main" type="button">
+            <span data-icon="full" data-size="20"></span>
+            <span><span class="action-title">Page entière</span><span class="action-desc">Toute la page, découpée en images nettes</span></span>
+            <kbd>⌥⇧F</kbd>
+          </button>
+          <div class="tiles" style="margin-top: var(--space-2)">
+            <button class="tile" type="button"><span data-icon="visible" data-size="20"></span>Visible<kbd>⌥⇧V</kbd></button>
+            <button class="tile is-hover" type="button"><span data-icon="block" data-size="20"></span>Un bloc</button>
+            <button class="tile" type="button" disabled><span data-icon="zone" data-size="20"></span>Une zone</button>
+          </div>
+          <div style="margin-top: var(--space-2)">
+            <button class="list-row" type="button"><span data-icon="devices"></span><span class="list-row-label">Téléphone, tablette, ordinateur<span class="list-row-meta">Ouvre la page dans un onglet à part</span></span><span data-icon="chevron"></span></button>
+            <button class="list-row is-hover" type="button"><span data-icon="convert"></span><span class="list-row-label">Convertir des images</span><span data-icon="chevron"></span></button>
+            <button class="list-row is-active" type="button"><span data-icon="transcript"></span><span class="list-row-label">Transcrire une vidéo</span><span data-icon="chevron"></span></button>
+            <button class="list-row" type="button" disabled><span data-icon="history"></span><span class="list-row-label">Captures récentes</span><span class="badge">12</span><span data-icon="chevron"></span></button>
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="h-seg">
+        <h2 id="h-seg">Contrôle segmenté</h2>
+        <p class="caption">Largeur utile de la colonne de réglages (240 px moins les marges)</p>
+        <div class="side-width">
+          <div class="segmented" id="seg-long" role="group" aria-label="Découpage">
+            <button type="button" aria-pressed="false">1 écran</button>
+            <button type="button" aria-pressed="false">Court</button>
+            <button type="button" aria-pressed="true">Moyen</button>
+            <button type="button" aria-pressed="false">Long</button>
+          </div>
+        </div>
+        <div class="narrow" style="margin-top: var(--space-3)">
+          <div class="segmented" role="group" aria-label="Format">
+            <button type="button" aria-pressed="false">PNG</button>
+            <button type="button" aria-pressed="true">JPG</button>
+            <button type="button" aria-pressed="false" class="is-hover">WebP</button>
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="h-fields">
+        <h2 id="h-fields">Champs, menu, zone de dépôt</h2>
+        <div class="fields">
+          <label class="field"><span class="field-label">Vide</span><input class="input" type="text" placeholder="Colle un lien YouTube" /></label>
+          <label class="field"><span class="field-label">Survol</span><input class="input is-hover" type="text" placeholder="Colle un lien YouTube" /></label>
+          <label class="field"><span class="field-label">Focus</span><input class="input is-focus" type="text" value="https://youtu.be/abc" /></label>
+          <label class="field"><span class="field-label">Rempli</span><input class="input" type="text" value="https://youtu.be/abc" /></label>
+          <label class="field is-error" id="field-error"><span class="field-label">Erreur</span><input class="input" type="text" value="https://vimeo.com/1" aria-invalid="true" aria-describedby="field-error-msg" /><span class="field-message" id="field-error-msg"><span data-icon="error"></span>Ce n'est pas une vidéo YouTube.</span></label>
+          <label class="field"><span class="field-label">Désactivé</span><input class="input" type="text" value="Indisponible" disabled /></label>
+          <label class="field"><span class="field-label">Menu déroulant</span><select class="select"><option>Langue de la vidéo</option><option>Français</option></select></label>
+          <label class="field"><span class="field-label">Menu désactivé</span><select class="select" disabled><option>Langue de la vidéo</option></select></label>
+        </div>
+        <div class="row" style="margin-top: var(--space-4); align-items: stretch">
+          <div class="dropzone" style="flex: 1"><span data-icon="download" data-size="24"></span><span>Dépose tes images ici</span><button class="btn-secondary" type="button">Choisir des fichiers</button></div>
+          <div class="dropzone is-over" style="flex: 1"><span data-icon="download" data-size="24"></span><span>Lâche pour convertir</span></div>
+          <div class="dropzone is-error" style="flex: 1"><span data-icon="download" data-size="24"></span><span>Format non pris en charge</span></div>
+        </div>
+      </section>
+
+      <section aria-labelledby="h-feedback">
+        <h2 id="h-feedback">Retours : badge, raccourci, toast, progression, bandeaux, état vide</h2>
+        <div class="row"><span class="badge">3</span><span class="badge">Nouveau</span><kbd>⌥⇧F</kbd><kbd>Échap</kbd></div>
+        <div class="row">
+          <div class="toast" role="status"><span data-icon="check"></span>Image copiée dans le presse-papiers</div>
+          <div class="toast" role="status"><span data-icon="check"></span>Capture supprimée<button class="btn-quiet" type="button">Annuler</button></div>
+          <div class="toast is-error" id="toast-error" role="alert"><span data-icon="error"></span>Copie impossible : la page n'a pas le focus.</div>
+        </div>
+        <div class="row narrow" style="flex-direction: column; align-items: stretch">
+          <div class="progress" role="progressbar" aria-label="Capture" aria-valuenow="40" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar" style="width: 40%"></div></div>
+          <div class="progress is-indeterminate" role="progressbar" aria-label="Préparation"><div class="progress-bar"></div></div>
+        </div>
+        <div class="row" style="flex-direction: column; align-items: stretch">
+          <div class="banner is-info"><span data-icon="info"></span><span>Clic droit sur une image d'un site : enregistre-la en PNG ou JPG.</span></div>
+          <div class="banner is-error" id="banner-error" role="alert"><span data-icon="error"></span><span>Cette page ne peut pas être capturée.</span></div>
+        </div>
+        <div class="empty"><span data-icon="history" data-size="24"></span><p class="empty-title">Aucune capture</p><p>Tes captures apparaîtront ici.</p></div>
+      </section>
+
+      <section aria-labelledby="h-layout">
+        <h2 id="h-layout">Gabarit de page</h2>
+        <div class="frame">
+          <header class="app-header">
+            <span class="logo" aria-hidden="true"></span>
+            <p class="app-header-title">Trois jours à Lisbonne</p>
+            <div class="app-header-actions"><button class="btn-secondary" type="button">Copier</button><button class="btn-primary" type="button">Tout télécharger (3 images)</button></div>
+          </header>
+          <div class="app-body">
+            <aside class="app-side">Réglages</aside>
+            <div class="app-main" style="background: var(--stage)"></div>
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="h-icons">
+        <h2 id="h-icons">Pictogrammes</h2>
+        <div class="icons" id="icons"></div>
+      </section>
+    </main>
+    <script type="module" src="demo.js"></script>
+  </body>
+</html>

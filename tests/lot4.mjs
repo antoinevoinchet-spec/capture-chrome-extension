@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { EXTENSION, MANIFEST_EXPECTED, capture, check, extensionPage, launch, openTab, prepareExtension, results, seedCapture } from './lib.mjs';
+import { EXTENSION, MANIFEST_EXPECTED, capture, check, extensionPage, launch, openTab, partAction, prepareExtension, results, seedCapture } from './lib.mjs';
 
 const run = promisify(execFile);
 const HERE = import.meta.dirname;
@@ -451,6 +451,8 @@ async function openPopup(context, sw, tabId) {
     const query = chrome.tabs.query.bind(chrome.tabs);
     chrome.tabs.query = async (info) => (info.active ? [await chrome.tabs.get(tabId)] : query(info));
   }, tabId);
+  // La confirmation du premier usage est vérifiée dans design.mjs : ici, elle est déjà donnée.
+  await popup.evaluate(() => chrome.storage.local.set({ devicesConfirmed: true }));
   await popup.reload();
   await popup.waitForSelector('#devices');
   return popup;
@@ -583,10 +585,12 @@ async function groupAppareils(context, sw, env) {
   // La fenêtre de l'icône.
   const held = await originPage(context, sw, base, probe);
   const popup = await openPopup(context, sw, held.tabId);
-  await test("fenêtre : le bouton annonce le bandeau et l'état initial, sans parler de sa couleur", async () => {
+  // le panneau dit seulement « Ouvre la page dans un onglet à part » ; le bandeau et l'état
+  // initial sont expliqués par la page de confirmation, vérifiée dans design.mjs (groupe appareils).
+  await test("fenêtre : le bouton annonce l'onglet à part, sans parler de couleur", async () => {
     const label = (await popup.locator('#devices').innerText()).replace(/\s+/g, ' ');
     await popup.screenshot({ path: path.join(WORK, 'fenetre.png') });
-    return { ok: /Téléphone, tablette, ordinateur/.test(label) && /bandeau/.test(label) && /état initial/.test(label) && !/jaune/.test(label), detail: label };
+    return { ok: /Téléphone, tablette, ordinateur/.test(label) && /onglet à part/.test(label) && !/jaune/.test(label), detail: label };
   });
   await test("fenêtre : le clic lance la capture, indique l'appareil, et une capture à la fois", async () => {
     await popup.click('#devices');
@@ -794,8 +798,18 @@ async function groupGroupe(context, sw, env) {
       await viewer.emulateMedia({ colorScheme: scheme });
       await viewer.screenshot({ path: path.join(WORK, `onglets-${scheme}.png`) });
       return viewer.evaluate(() => {
+        // Toute syntaxe de couleur (oklch() depuis le design system du 2026-11-18) : le canvas la ramène en RVB.
+        const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+        const toRgb = (text) => {
+          ctx.clearRect(0, 0, 1, 1);
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, 1, 1);
+          ctx.fillStyle = text;
+          ctx.fillRect(0, 0, 1, 1);
+          return [...ctx.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+        };
         const luminance = (text) => {
-          const [r, g, b] = text.match(/[\d.]+/g).map(Number).map((value) => {
+          const [r, g, b] = toRgb(text).map((value) => {
             const c = value / 255;
             return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
           });
@@ -834,7 +848,7 @@ async function groupGroupe(context, sw, env) {
     await showTab(viewer, 'Téléphone');
     const phoneBefore = await reddish();
     await showTab(viewer, 'Tablette');
-    await viewer.locator('figure.part .annotate').first().click();
+    await partAction(viewer, 0, 'annotate').click();
     await viewer.waitForSelector('#editor:not([hidden])');
     const stage = await viewer.locator('#editor-scroll').boundingBox();
     const editorWidth = await viewer.evaluate(() => Math.round(Number(document.getElementById('editor').dataset.scale) * 1640));
@@ -865,7 +879,8 @@ async function groupGroupe(context, sw, env) {
     for (const label of ['Téléphone', 'Tablette', 'Ordinateur']) {
       await showTab(viewer, label);
       red[label] = await reddish();
-      buttons.push(await viewer.evaluate(() => [...document.querySelector('figure.part .part-actions').querySelectorAll('button')].map((el) => el.textContent).join()));
+      // un seul bouton « ⋯ » par image, qui ouvre le menu Copier, Télécharger, Annoter.
+      buttons.push(await viewer.evaluate(() => [document.querySelector('figure.part figcaption').querySelectorAll('button').length, ...[...document.querySelectorAll('#image-menu [data-action]')].map((el) => el.dataset.action)].join()));
     }
     await viewer.reload();
     await waitReady(viewer);
@@ -875,14 +890,14 @@ async function groupGroupe(context, sw, env) {
       const db = await import(chrome.runtime.getURL('lib/db.js'));
       await db.saveAnnotations(id, []);
     }, ids[1]);
-    return { ok: same(kinds, [0, 1, 0]) && mark === 'annotée' && buttons.every((row) => row === 'Copier,Télécharger,Annoter') && red.Tablette > 0 && red.Ordinateur === 0 && red.Téléphone === phoneBefore, detail: `${kinds} ; ${mark} ; rouge ${JSON.stringify(red)} ; ${buttons[0]} ; éditeur ${editorWidth}` };
+    return { ok: same(kinds, [0, 1, 0]) && mark === 'annotée' && buttons.every((row) => row === '1,copy,download,annotate') && red.Tablette > 0 && red.Ordinateur === 0 && red.Téléphone === phoneBefore, detail: `${kinds} ; ${mark} ; rouge ${JSON.stringify(red)} ; ${buttons[0]} ; éditeur ${editorWidth}` };
   });
 
   await test('groupe : noms de fichiers et dossier', async () => {
     const names = [];
     for (const label of ['Téléphone', 'Tablette', 'Ordinateur']) {
       await showTab(viewer, label);
-      names.push((await downloadsDuring(sw, viewer, () => viewer.locator('figure.part .part-save').first().click())).names[0]);
+      names.push((await downloadsDuring(sw, viewer, () => partAction(viewer, 0, 'download').click())).names[0]);
     }
     const rows = names.map((name) => name.split('/'));
     const folder = rows[0][1];
@@ -971,7 +986,7 @@ async function groupGroupe(context, sw, env) {
     const ids = await seedGroup(admin, Date.now(), 'http://site.fr/page');
     const opened = await extensionPage(context, `viewer/viewer.html?id=${ids[0]}`);
     await waitReady(opened);
-    const { names: [name] } = await downloadsDuring(sw, opened, () => opened.locator('figure.part .part-save').first().click());
+    const { names: [name] } = await downloadsDuring(sw, opened, () => partAction(opened, 0, 'download').click());
     await opened.close();
     return { ok: /^Captures\/site\.fr_[^/]+\/site\.fr_[^/]+-telephone-01\.png$/.test(name), detail: name };
   });
@@ -983,7 +998,7 @@ async function groupGroupe(context, sw, env) {
     await waitReady(opened);
     const state = await tabsState(opened);
     const title = await opened.locator('.history-title').innerText();
-    const { names: [name] } = await downloadsDuring(sw, opened, () => opened.locator('figure.part .part-save').first().click());
+    const { names: [name] } = await downloadsDuring(sw, opened, () => partAction(opened, 0, 'download').click());
     let question = '';
     opened.once('dialog', async (dialog) => {
       question = dialog.message();

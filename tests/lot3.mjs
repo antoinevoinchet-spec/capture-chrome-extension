@@ -645,7 +645,8 @@ const countScrolls = (page) =>
     window.addEventListener('scroll', () => window.__scrolls++, { capture: true, passive: true });
   });
 
-const CALQUE = { edge: [244, 197, 66] };
+// Couleur du cadre de sélection (terre cuite : --accent clair du design system).
+const CALQUE = { edge: [180, 83, 47] };
 const CYAN = [0, 204, 255];
 const MAGENTA = [255, 0, 170];
 const BLUE = [0, 0, 255];

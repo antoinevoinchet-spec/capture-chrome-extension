@@ -1,150 +1,186 @@
+/* Panneau de l'icône. 340 px de large, sans coins ni ombre propres : Chrome dessine le cadre. */
 body {
-  width: 300px;
-  padding: 14px;
+  width: 340px; /* hors tokens : largeur du panneau de l'icône */
+  padding: var(--space-3);
+}
+
+/* Tant que popup.js n'a pas lu l'onglet actif (50 ms au plus), rien ne s'affiche : la ligne YouTube est connue avant le premier rendu. */
+body.is-loading {
+  visibility: hidden;
 }
 
 .head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  font-weight: 600;
+  gap: var(--space-2);
+  height: var(--space-5);
+  margin-bottom: var(--space-2);
 }
 
-.actions {
+.head .logo {
+  width: 20px;
+  height: 20px;
+}
+
+.head-title {
+  flex: 1;
+  font-size: var(--text-14);
+  font-weight: var(--weight-semibold);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.tiles {
   display: grid;
-  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
 }
 
-.action {
+/* Tuiles serrées, de même hauteur, que le raccourci existe ou non. */
+.tiles .tile {
+  justify-content: flex-start;
+  padding: var(--space-2);
+}
+
+.tile kbd[hidden] {
+  display: inline-flex !important;
+  visibility: hidden;
+}
+
+.tile:not(:has(kbd))::after {
+  content: "";
+  height: 20px;
+}
+
+/* Aucun raccourci attribué : la ligne réservée n'a plus lieu d'être (connu avant l'affichage). */
+.tiles:not(:has(kbd:not([hidden]))) kbd,
+.tiles:not(:has(kbd:not([hidden]))) .tile::after {
+  display: none !important;
+}
+
+#full {
+  padding-block: var(--space-2);
+}
+
+.video-row {
+  min-height: var(--control-s);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+/* Statut, erreur et conseil : groupés et serrés, ils n'apparaissent que quand il y a lieu. */
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.messages:not(:has(> :not([hidden]))) {
+  display: none;
+}
+
+.status-line {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  text-align: left;
-  background: var(--paper-raised);
+  gap: var(--space-2);
+  min-height: var(--space-5);
 }
 
-.action:not(:disabled):hover {
-  border-color: var(--ink-muted);
+.status-line .btn-quiet {
+  height: var(--space-5);
 }
 
-.action.primary {
-  border-color: transparent;
-  color: var(--primary-fg);
-  background: var(--primary-bg);
+.head .btn-icon {
+  width: var(--space-5);
+  height: var(--space-5);
 }
 
-.action.primary:not(:disabled):hover {
-  background: var(--primary-bg-hover);
+.status-line p {
+  margin: 0;
+  font-size: var(--text-12);
+  color: var(--text-muted);
 }
 
-.action-title {
-  display: block;
-  font-weight: 600;
+.status .progress {
+  margin-top: var(--space-1);
 }
 
-.action-desc {
-  display: block;
-  font-size: 12.5px;
-  opacity: 0.78;
-}
-
-kbd {
-  flex: none;
-  padding: 2px 6px;
-  border: 1px solid currentColor;
-  border-radius: 5px;
-  font: inherit;
-  font-size: 12px;
-  opacity: 0.7;
-}
-
-.shortcut-hint {
-  margin: 12px 0 0;
-  font-size: 12.5px;
-  color: var(--ink-muted);
+#shortcut-hint,
+#error {
+  margin: 0;
+  font-size: var(--text-12);
 }
 
 .inline-link {
   padding: 0;
   border: 0;
   font-size: inherit;
-  font-weight: 600;
-  color: var(--ink);
+  font-weight: var(--weight-semibold);
+  color: var(--accent-text);
   background: none;
   text-decoration: underline;
-  text-underline-offset: 3px;
+  text-underline-offset: 3px; /* hors tokens : écart du soulignement */
 }
 
-.status {
-  margin-top: 14px;
-}
-
-.bar {
-  height: 4px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: var(--paper-sunk);
-}
-
-#bar-fill {
-  width: 0;
-  height: 100%;
-  background: var(--cut);
-  transition: width 0.2s ease-out;
-}
-
-.status p {
-  margin: 6px 0 0;
-  font-size: 13px;
-  color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.error {
-  margin: 12px 0 0;
-  font-size: 13px;
-  color: var(--danger);
-}
-
-.links {
+.list {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 0 12px;
-  margin-top: 12px;
+  flex-direction: column;
+  margin: 0 calc(-1 * var(--space-1));
 }
 
-.link {
-  padding: 4px 0;
-  border: 0;
-  font-size: 13px;
-  color: var(--ink-muted);
-  background: none;
-  text-decoration: underline;
-  text-underline-offset: 3px;
+.list .list-row {
+  min-height: var(--control-s);
 }
 
-.web-note {
-  margin: 10px 0 0;
-  font-size: 12px;
-  color: var(--ink-muted);
+/* Place réservée au nombre de captures, lu après l'affichage. */
+.recent-count:empty {
+  visibility: hidden;
+}
+
+.foot {
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--space-5);
+}
+
+.tip {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-12);
+  color: var(--text-muted);
+}
+
+.tip span {
+  flex: 1;
+  min-width: 0;
+}
+
+.tip-close.btn-icon {
+  width: var(--space-5);
+  height: var(--space-5);
 }
 
 .version {
-  margin: 6px 0 0;
-  font-size: 11px;
-  color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
+  margin: 0 0 0 auto;
+  font-size: var(--text-11);
+  color: var(--text-muted);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #bar-fill {
+  .progress-bar {
     transition: none;
   }
 }

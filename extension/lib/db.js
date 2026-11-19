@@ -82,6 +82,9 @@ export const getCapture = (id) => onStore(CAPTURES, 'readonly', (store) => store
 
 export const deleteCapture = (id) => request([CAPTURES, ANNOTATIONS], 'readwrite', (tx) => removeCapture(tx, id));
 
+// Nombre de captures enregistrées, sans charger leurs images.
+export const countCaptures = () => onStore(CAPTURES, 'readonly', (store) => store.count());
+
 export async function listCaptures() {
   const all = await onStore(CAPTURES, 'readonly', (store) => store.getAll());
   return all.sort(newestFirst);

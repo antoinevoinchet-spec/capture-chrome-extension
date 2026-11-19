@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Icône de Capture : carré noir, deux équerres de cadrage, point terre cuite. Liseré gris pour les barres sombres. -->
+  <rect x="0.375" y="0.375" width="31.25" height="31.25" rx="7.6" fill="#1d1d1f" stroke="#4d4d50" stroke-width="0.75"/>
+  <path d="M9 16V9h7M23 16v7h-7" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="21.5" cy="10.5" r="2.6" fill="#e08a62"/>
+</svg>

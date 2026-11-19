@@ -7,6 +7,7 @@
 // Konva est chargé par la page (balise <script>) : on y accède par le global `Konva`.
 
 import { COLORS, SIZES, TOOLS, badgeNumbers, createNode, itemBounds, maskRect, measureItems } from './shapes.js';
+import { icon } from '../ui/icons.js';
 
 // Hauteur d'une tuile de fond, en pixels de la capture, et recouvrement avec la suivante : pas de filet clair entre deux tuiles.
 const TILE_PX = 2048;
@@ -26,12 +27,12 @@ const FILLED = ['highlight', 'mask'];
 // Couleur de départ de chaque outil : jaune pour le surligneur, rouge pour les autres.
 const START_COLORS = Object.fromEntries(TOOLS.map(({ key }) => [key, key === 'highlight' ? 'yellow' : 'red']));
 // Teinte d'un masque pendant qu'on le tire, et s'il est impossible de lire son liseré.
-const NEUTRAL_FILL = '#808080';
+const NEUTRAL_FILL = '#808080'; // hors tokens : dessin Konva sur le canevas, qui ne lit pas les variables CSS
 // Nombre de modifications que « Annuler » peut défaire.
 const HISTORY_LIMIT = 100;
 // Cadre de sélection : couleur du liseré et des poignées, coins offerts, rayon des poignées de flèche (en points d'écran),
 // types d'annotation qu'on redimensionne par leurs coins (les autres ne font que se déplacer).
-const SELECT_COLOR = '#0a84ff';
+const SELECT_COLOR = '#0a84ff'; // hors tokens : dessin Konva sur le canevas, qui ne lit pas les variables CSS
 const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 const HANDLE_RADIUS = 7;
 const RESIZABLE = ['rect', 'highlight', 'mask'];
@@ -58,6 +59,8 @@ const els = {
   root: document.getElementById('editor'),
   close: document.getElementById('editor-close'),
   copy: document.getElementById('editor-copy'),
+  download: document.getElementById('editor-download'),
+  tip: document.getElementById('editor-tip'),
   tools: document.getElementById('editor-tools'),
   scroll: document.getElementById('editor-scroll'),
   stage: document.getElementById('editor-stage'),
@@ -77,25 +80,8 @@ const els = {
   veils: Object.fromEntries([...document.querySelectorAll('.editor-trim-veil')].map((el) => [el.dataset.side, el])),
 };
 
-const svgIcon = (paths) =>
-  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
-
-const TOOL_ICONS = {
-  arrow: svgIcon('<path d="M6 18 18 6"/><path d="M9 6h9v9"/>'),
-  rect: svgIcon('<rect x="4" y="6" width="16" height="12" rx="1.5"/>'),
-  highlight: svgIcon('<path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>'),
-  text: svgIcon('<path d="M5 7V5h14v2"/><path d="M12 5v14"/><path d="M9 19h6"/>'),
-  badge: svgIcon('<circle cx="12" cy="12" r="8.5"/><path d="m10.5 10 2-1.5V16"/>'),
-  mask: svgIcon(
-    '<rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 12h16M12 4v16"/><rect x="4" y="4" width="8" height="8" fill="currentColor"/><rect x="12" y="12" width="8" height="8" fill="currentColor"/>',
-  ),
-  pen: svgIcon('<path d="m4 20 1-4L16 5a2.1 2.1 0 0 1 3 3L8 19z"/><path d="m14 7 3 3"/>'),
-};
-
-const CLEAR_ICON = svgIcon('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>');
-
-// Rayon (dans une boîte de 24) du point qui figure chaque taille.
-const SIZE_DOTS = { s: 3.5, m: 6, l: 9 };
+// Pictogramme de chaque outil, pris dans le jeu commun du design system (ui/icons.js).
+const TOOL_ICONS = { arrow: 'arrow', rect: 'rect', highlight: 'highlight', text: 'text', badge: 'counter', mask: 'mask', pen: 'pen' };
 
 // Séance en cours (null quand l'éditeur est fermé). Champs : record, stitcher, parts, onChange, onCopy, onClose,
 // items (les annotations, remplacées par une nouvelle liste à chaque modification), trim (le cadrage validé, ou null), trimming (le réglage
@@ -118,7 +104,7 @@ buildTrimHandles();
 // pourquoi une copie est refusée.
 // `onChange({ items, trim })` reçoit le nouvel état après chaque modification validée ; `onCopy(index)` copie l'une des images ;
 // `onClose()` est appelé quand l'éditeur est refermé.
-export function openEditor({ record, stitcher, parts, items, trim = null, startTop, onChange, onCopy, onClose, replan, onRefuse }) {
+export function openEditor({ record, stitcher, parts, items, trim = null, startTop, onChange, onCopy, onDownload, onClose, replan, onRefuse }) {
   if (session) return;
   session = {
     record,
@@ -132,6 +118,7 @@ export function openEditor({ record, stitcher, parts, items, trim = null, startT
     onRefuse,
     onChange,
     onCopy,
+    onDownload,
     onClose,
     undoStack: [],
     redoStack: [],
@@ -164,6 +151,7 @@ export function openEditor({ record, stitcher, parts, items, trim = null, startT
 
   els.close.addEventListener('click', closeEditor, { signal });
   els.copy.addEventListener('click', copyReadingPart, { signal });
+  els.download.addEventListener('click', downloadReadingPart, { signal });
   els.undo.addEventListener('click', undo, { signal });
   els.redo.addEventListener('click', redo, { signal });
   els.clear.addEventListener('click', clearAll, { signal });
@@ -177,6 +165,8 @@ export function openEditor({ record, stitcher, parts, items, trim = null, startT
   els.trimLayer.addEventListener('pointercancel', onTrimPointerCancel, { signal });
   els.trimLayer.addEventListener('contextmenu', (event) => event.preventDefault(), { signal });
   els.tools.addEventListener('click', onToolbarClick, { signal });
+  for (const type of ['pointerover', 'focusin']) els.tools.addEventListener(type, showTip, { signal });
+  for (const type of ['pointerout', 'focusout']) els.tools.addEventListener(type, hideTip, { signal });
   els.scroll.addEventListener('scroll', syncView, { passive: true, signal });
   els.stage.addEventListener('pointerdown', onPointerDown, { signal });
   els.stage.addEventListener('pointermove', onPointerMove, { signal });
@@ -201,7 +191,7 @@ async function closeEditor() {
   ended.abort.abort();
   // Un cadre en cours de réglage n'est pas validé : il est abandonné.
   ended.trimming = null;
-  els.tools.inert = false;
+  setToolsInert(false);
   if (ended.replanning) ended.onRefuse('Le cadrage se recalcule : l’éditeur se ferme dans un instant.');
   commitText();
   await ended.queue;
@@ -222,7 +212,8 @@ async function closeEditor() {
 
 // Le reste de la page ne reçoit ni clic ni focus tant que l'éditeur est ouvert (le message temporaire reste actif).
 function setPageInert(inert) {
-  for (const el of document.querySelectorAll('.top, .layout, #image-menu')) el.inert = inert;
+  // En-tête, colonne et images de la page des captures (gabarit du design system), et son menu d'image.
+  for (const el of document.querySelectorAll('.app-header, .app-body, #save-alert, #image-menu')) el.inert = inert;
 }
 
 // Pendant la saisie d'un texte, les touches n'arrivent pas jusqu'ici (voir onFieldKeydown).
@@ -268,20 +259,52 @@ function onContextMenu(event) {
 // ---- Barre d'outils ----
 
 function buildToolbar() {
-  const tools = TOOLS.map((tool) => choice(tool.key, tool.label, 'editor-tool', TOOL_ICONS[tool.key], `${tool.label} (${tool.shortcut})`));
+  const tools = TOOLS.map((tool) => choice(tool.key, tool.label, 'editor-tool', icon(TOOL_ICONS[tool.key], 20), `${tool.label} (${tool.shortcut})`));
   const colors = Object.entries(COLORS).map(([key, color]) => swatch(key, color));
   const sizes = Object.entries(SIZES).map(([key, size]) => choice(key, `Taille : ${size.label}`, 'editor-size', sizeDot(key)));
-  els.tools.replaceChildren(group('tool', 'Outils', tools), group('color', 'Couleur', colors), group('size', 'Taille', sizes));
+  // « Recadrer » rejoint les outils, sous les outils de dessin.
+  const trim = document.createElement('div');
+  trim.className = 'editor-extra';
+  els.trim.dataset.tip = 'Recadrer';
+  trim.append(els.trim);
+  els.tools.replaceChildren(group('tool', 'Outils', tools), trim, group('color', 'Couleur', colors), group('size', 'Taille', sizes));
 }
 
 function sizeDot(key) {
-  return svgIcon(`<circle cx="12" cy="12" r="${SIZE_DOTS[key]}" fill="currentColor"/>`);
+  const dot = document.createElement('span');
+  dot.className = 'editor-dot';
+  dot.dataset.size = key;
+  return dot;
 }
 
-// « Tout effacer » rejoint Annuler et Rétablir, déjà dans la page.
+// « Tout effacer » : en bas de la colonne d'outils, loin d'Annuler et Rétablir. Son effet s'annule par Annuler.
 function buildHistory() {
-  els.clear = choice('clear', 'Tout effacer', 'editor-icon editor-clear', CLEAR_ICON);
-  els.redo.after(els.clear);
+  els.clear = choice('clear', 'Tout effacer', 'editor-tool editor-clear', icon('trash', 20));
+  const box = document.createElement('div');
+  box.className = 'editor-extra editor-clear-box';
+  box.append(els.clear);
+  els.tools.append(box);
+}
+
+// Pendant le recadrage, les outils de dessin sont inertes ; « Recadrer » reste actif, il valide le cadrage.
+function setToolsInert(inert) {
+  for (const box of els.tools.children) if (!box.contains(els.trim)) box.inert = inert;
+}
+
+// Info-bulle des outils : leur nom (et leur raccourci) au survol et au focus. Posée en position fixe : la colonne défile en hauteur
+// et couperait une bulle qui en dépasse.
+function showTip(event) {
+  const button = event.target.closest('button');
+  if (!button || button.disabled) return;
+  els.tip.textContent = button.dataset.tip ?? button.getAttribute('aria-label');
+  els.tip.hidden = false;
+  const box = button.getBoundingClientRect();
+  els.tip.style.left = `${box.right + 8}px`;
+  els.tip.style.top = `${box.top + box.height / 2 - els.tip.offsetHeight / 2}px`;
+}
+
+function hideTip(event) {
+  if (event.type === 'focusout' || !event.relatedTarget?.closest?.('#editor-tools button')) els.tip.hidden = true;
 }
 
 // Un groupe de boutons dont un seul est enfoncé à la fois (voir showChoices) ; `kind` dit ce qu'il règle : tool, color ou size.
@@ -302,13 +325,13 @@ function choice(key, label, className, content, hint = label) {
   el.className = className;
   el.dataset.key = key;
   el.setAttribute('aria-label', label);
-  el.title = hint;
-  el.innerHTML = content;
+  el.dataset.tip = hint;
+  if (content) el.append(content);
   return el;
 }
 
 function swatch(key, color) {
-  const el = choice(key, color.label, 'editor-color', '');
+  const el = choice(key, color.label, 'editor-color', null);
   el.style.setProperty('--swatch', color.hex);
   return el;
 }
@@ -317,7 +340,8 @@ const CHOOSERS = { tool: chooseTool, color: chooseColor, size: chooseSize };
 
 function onToolbarClick(event) {
   const button = event.target.closest('button');
-  if (button) CHOOSERS[button.closest('.editor-group').dataset.kind](button.dataset.key);
+  const kind = button?.closest('.editor-group')?.dataset.kind;
+  if (kind) CHOOSERS[kind](button.dataset.key);
 }
 
 function chooseTool(key) {
@@ -359,7 +383,7 @@ function showChoices() {
   const item = selectedItem();
   const chosen = { tool: session.tool, color: item?.color ?? session.colors[session.tool], size: item?.size ?? session.size };
   const kind = item ? item.type : session.tool;
-  for (const box of els.tools.children) {
+  for (const box of els.tools.querySelectorAll('.editor-group')) {
     const unused = (kind === 'mask' && box.dataset.kind !== 'tool') || (kind === 'highlight' && box.dataset.kind === 'size');
     for (const el of box.children) {
       el.disabled = unused;
@@ -389,7 +413,7 @@ function buildStage() {
   const frame = buildFrame();
   const handles = new Konva.Group({ visible: false });
   for (let i = 0; i < 2; i++) {
-    handles.add(new Konva.Circle({ name: 'handle', radius: HANDLE_RADIUS, fill: '#ffffff', stroke: SELECT_COLOR, strokeWidth: 2, hitStrokeWidth: 12 }));
+    handles.add(new Konva.Circle({ name: 'handle', radius: HANDLE_RADIUS, fill: '#ffffff', stroke: SELECT_COLOR, strokeWidth: 2, hitStrokeWidth: 12 })); // hors tokens : dessin Konva sur le canevas, qui ne lit pas les variables CSS
   }
   layer.add(masks, shapes, frame, handles);
   stage.add(layer);
@@ -408,7 +432,7 @@ function buildFrame() {
     enabledAnchors: CORNERS,
     borderStroke: SELECT_COLOR,
     anchorStroke: SELECT_COLOR,
-    anchorFill: '#ffffff',
+    anchorFill: '#ffffff', // hors tokens : dessin Konva sur le canevas, qui ne lit pas les variables CSS
     boundBoxFunc: keepBoxInside,
   });
   frame.on('transform', () => foldScale(frame));
@@ -1186,6 +1210,13 @@ function copyReadingPart() {
   else session.onCopy(readingPart());
 }
 
+// « Télécharger » : l'image en cours de lecture, annotée, au format choisi dans la page des captures.
+function downloadReadingPart() {
+  if (session.trimming) session.onRefuse('Valide ou annule le cadrage, puis télécharge l’image.');
+  else if (session.replanning) session.onRefuse('Le cadrage se recalcule : réessaie dans un instant.');
+  else session.onDownload(readingPart());
+}
+
 // ---- Recadrage ----
 
 const sameTrim = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -1292,7 +1323,7 @@ function startTrim() {
   select(null);
   const { width, height } = session.record;
   session.trimming = { rect: session.trim ? { ...session.trim } : { x: 0, y: 0, w: width, h: height }, drag: null };
-  els.tools.inert = true;
+  setToolsInert(true);
   showTrim();
   showHistory();
   els.trimBox.querySelector('[data-edge="n"]').focus({ preventScroll: true });
@@ -1300,7 +1331,7 @@ function startTrim() {
 
 function leaveTrim() {
   session.trimming = null;
-  els.tools.inert = false;
+  setToolsInert(false);
   showTrim();
   showHistory();
   els.trim.focus({ preventScroll: true });

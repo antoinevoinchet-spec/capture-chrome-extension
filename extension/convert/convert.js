@@ -2,6 +2,7 @@
 // Le travail se fait à part (convert-worker.js), une image à la fois. Rien n'est gardé après la fermeture de l'onglet.
 
 import { cleanBase } from '../lib/file-name.js';
+import { fillIcons, logo } from '../ui/icons.js';
 import { FORMATS } from '../lib/settings.js';
 import { isWritingField, namePasted, pastedFiles } from './paste.js';
 import { buildPdf } from './pdf.js';
@@ -44,7 +45,7 @@ const collator = new Intl.Collator('fr', { numeric: true, sensitivity: 'base' })
 const decimal = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 });
 
 const els = Object.fromEntries(
-  ['summary', 'cancel', 'convert', 'download-all', 'format', 'format-hint', 'quality', 'quality-section', 'quality-hint', 'resize', 'resize-field', 'resize-name', 'resize-value', 'resize-unit', 'resize-error', 'drop', 'files', 'list-head', 'list-count', 'clear', 'list', 'toast'].map((id) => [id.replace(/-(\w)/g, (_, letter) => letter.toUpperCase()), document.getElementById(id)]),
+  ['summary', 'choose', 'cancel', 'convert', 'download-all', 'format', 'format-hint', 'quality', 'quality-section', 'quality-hint', 'resize', 'resize-field', 'resize-name', 'resize-value', 'resize-unit', 'resize-error', 'drop', 'files', 'list-head', 'list-count', 'clear', 'list', 'toast'].map((id) => [id.replace(/-(\w)/g, (_, letter) => letter.toUpperCase()), document.getElementById(id)]),
 );
 
 const state = {
@@ -109,9 +110,11 @@ function setPressed(host, current) {
   }
 }
 
-// Un réglage change : les fichiers déjà faits n'y correspondent plus. On les efface pour ne jamais en télécharger un qui serait faux.
+// Un réglage change : les fichiers déjà faits n'y correspondent plus. On les efface pour ne jamais en télécharger un qui serait faux,
+// et « Reconvertir » les propose. Les réglages sont verrouillés pendant une conversion : ceci n'arrive qu'à l'arrêt.
 function settingsChanged() {
   for (const item of state.items) {
+    if (item.status === 'done' || item.status === 'error') item.stale = true;
     item.status = 'waiting';
     item.result = null;
     item.error = null;
@@ -163,6 +166,8 @@ function addFiles(files, { keepOrder = false } = {}) {
   const added = ordered.map(createItem);
   state.items.push(...added);
   listChanged();
+  // Conversion au dépôt, avec les réglages affichés. Un réglage invalide bloque : le message reste affiché, rien ne part.
+  start();
 }
 
 function createItem(file) {
@@ -177,7 +182,7 @@ function removeItem(item) {
   releasePreview(item);
   listChanged();
   const next = state.items[Math.min(index, state.items.length - 1)];
-  (next ? next.row.querySelector('.item-remove') : els.files).focus();
+  (next ? next.row.querySelector('.item-remove') : els.choose).focus();
 }
 
 function moveItem(item, delta, button) {
@@ -361,15 +366,19 @@ function render() {
 
   const waiting = withStatus('waiting').length;
   const done = withStatus('done').length;
-  els.convert.hidden = state.running;
+  // « Reconvertir » : seulement pour des fichiers déjà convertis avec d'autres réglages, ou restés en attente (réglage invalide,
+  // conversion annulée) ; jamais pendant une conversion.
+  const stale = state.items.filter((item) => item.status === 'waiting' && item.stale).length;
+  els.convert.hidden = state.running || !waiting;
   els.cancel.hidden = !state.running;
-  els.convert.textContent = waiting ? `Convertir (${waiting})` : 'Convertir';
+  els.convert.textContent = stale ? (stale === 1 && waiting === 1 ? 'Reconvertir' : `Reconvertir (${waiting})`) : `Convertir (${waiting})`;
   els.convert.disabled = !waiting || Boolean(problem);
-  els.convert.className = waiting ? 'btn-primary' : 'btn-secondary';
 
   const ready = !state.running && !waiting && done > 0;
   els.downloadAll.textContent = isPdf() ? 'Télécharger le PDF' : done === 1 ? 'Télécharger l’image' : done ? `Tout télécharger (${images(done)})` : 'Tout télécharger';
   els.downloadAll.disabled = !ready || (isPdf() && !state.pdf);
+  // Rien à télécharger tant que la liste est vide : pas de bouton grisé sans explication.
+  els.downloadAll.hidden = !state.items.length;
   els.downloadAll.className = ready ? 'btn-primary' : 'btn-secondary';
 
   els.summary.textContent = summaryText();
@@ -421,9 +430,11 @@ async function start() {
     if (run !== state.run) return;
     if (reply.error) {
       item.status = 'error';
+      item.stale = false;
       item.error = reply.error;
     } else {
       item.status = 'done';
+      item.stale = false;
       const { thumb, ...result } = reply;
       item.result = result;
       showThumb(item, thumb);
@@ -591,14 +602,14 @@ els.files.addEventListener('change', () => {
 // Un fichier lâché à côté de la zone ne doit pas remplacer la page : toute la fenêtre accepte le dépôt.
 window.addEventListener('dragover', (event) => {
   event.preventDefault();
-  els.drop.classList.add('over');
+  els.drop.classList.add('is-over');
 });
 window.addEventListener('dragleave', (event) => {
-  if (!event.relatedTarget) els.drop.classList.remove('over');
+  if (!event.relatedTarget) els.drop.classList.remove('is-over');
 });
 window.addEventListener('drop', (event) => {
   event.preventDefault();
-  els.drop.classList.remove('over');
+  els.drop.classList.remove('is-over');
   addFiles(event.dataTransfer.files);
 });
 document.addEventListener('paste', (event) => {
@@ -619,9 +630,16 @@ els.clear.addEventListener('click', () => {
   state.items.forEach(releasePreview);
   state.items = [];
   listChanged();
-  els.files.focus();
+  els.choose.focus();
+});
+// « Choisir des fichiers », ou un clic ailleurs dans la zone de dépôt : le sélecteur de fichiers de Chrome.
+els.drop.addEventListener('click', (event) => {
+  if (event.target !== els.files) els.files.click();
 });
 els.resizeValue.addEventListener('input', settingsChanged);
+
+fillIcons();
+document.querySelector('[data-logo]').replaceWith(logo(24));
 
 const stored = await chrome.storage.sync.get({ convertFormat: 'jpg', convertQuality: 'high' });
 state.format = OUTPUTS[stored.convertFormat] ? stored.convertFormat : 'jpg';

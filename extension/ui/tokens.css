@@ -1,44 +1,142 @@
-/* Palette « tapis de découpe » partagée par la fenêtre de l'icône et la page des captures. */
+/* Design system « Papier, terre cuite ».
+   Deux couches : primitives (échelles, valeurs brutes), puis rôles. Hors de ce fichier, seuls les rôles sont permis.
+   Échelles de couleur à la manière de Radix : 1-2 fonds, 3-5 fonds de composant (repos, survol, appui),
+   6-8 bordures, 9-10 plein, 11-12 texte. Gris chaud tiré de Radix « sand », terre cuite calée sur #b4532f (#e08a62 en sombre). */
 :root {
   color-scheme: light dark;
-  --mat: #23453b;
-  --mat-deep: #1a372e;
-  --mat-line: rgb(255 255 255 / 0.05);
-  --mat-line-strong: rgb(255 255 255 / 0.11);
-  --on-mat: #e8efeb;
-  --on-mat-muted: #a9bdb4;
-  --cut: #f4c542;
-  --paper: #f5f7f5;
-  --paper-raised: #ffffff;
-  --paper-sunk: #e7ece8;
-  --ink: #15211d;
-  --ink-muted: #56655f;
-  --line: #d2dad5;
-  --danger: #b3261e;
-  --primary-bg: var(--mat);
-  --primary-bg-hover: var(--mat-deep);
-  --primary-fg: #ffffff;
-  --focus: var(--ink);
-  --toast-success: #8be3a9;
-  --font: "Avenir Next", Avenir, system-ui, sans-serif;
+
+  /* ---- Primitives : couleurs, clair ---- */
+  --gray-1: oklch(99.4% 0.001 106.4);
+  --gray-2: oklch(97.9% 0.003 84.6);
+  --gray-3: oklch(95.5% 0.004 91.4);
+  --gray-4: oklch(92.8% 0.006 84.6);
+  --gray-5: oklch(90.4% 0.007 88.6);
+  --gray-6: oklch(87.7% 0.009 84.6);
+  --gray-7: oklch(83.9% 0.010 87.5);
+  --gray-8: oklch(77.4% 0.013 86.8);
+  --gray-9: oklch(60.8% 0.013 84.6);
+  --gray-10: oklch(57.0% 0.013 84.6);
+  --gray-11: oklch(47.3% 0.012 81.8);
+  --gray-12: oklch(24.0% 0.008 84.6);
+
+  --clay-1: oklch(99.2% 0.003 48.7);
+  --clay-2: oklch(97.5% 0.010 48.6);
+  --clay-3: oklch(94.4% 0.024 47.1);
+  --clay-4: oklch(90.7% 0.040 45.8);
+  --clay-5: oklch(86.4% 0.055 45.7);
+  --clay-6: oklch(81.0% 0.071 45.1);
+  --clay-7: oklch(73.8% 0.093 43.6);
+  --clay-8: oklch(64.9% 0.118 42.7);
+  --clay-9: oklch(55.8% 0.136 40.2);
+  --clay-10: oklch(51.7% 0.132 40.1);
+  --clay-11: oklch(48.6% 0.130 39.3);
+  --clay-12: oklch(30.3% 0.067 40.3);
+
+  /* Rouge d'erreur : plus froid (vers le carmin) que la terre cuite, pour ne jamais s'y confondre. */
+  --red-9: oklch(53.4% 0.205 17.2);
+  --red-11: oklch(48.2% 0.186 16.6);
+  --red-3: oklch(95.5% 0.022 15);
+
+  /* ---- Primitives : espacement, texte, rayons, contrôles ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --text-11: 11px;
+  --text-12: 12px;
+  --text-13: 13px;
+  --text-14: 14px;
+  --text-16: 16px;
+  --text-20: 20px;
+  --text-28: 28px;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --radius-l: 14px;
+  --radius-xl: 20px;
+
+  --control-s: 32px;
+  --control-l: 40px;
+  --header-h: 56px;
+  --side-w: 240px;
+
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* ---- Rôles (seuls permis dans les CSS d'écran) ---- */
+  --bg: var(--gray-2);
+  --bg-subtle: var(--gray-3);
+  --surface: var(--gray-1);
+  --surface-hover: var(--gray-3);
+  --surface-active: var(--gray-4);
+  --border: var(--gray-6);
+  --border-strong: var(--gray-9);
+  --text: var(--gray-12);
+  --text-muted: var(--gray-11);
+  --accent: var(--clay-9);
+  --accent-subtle: var(--clay-3);
+  --accent-text: var(--clay-11);
+  --focus: var(--clay-9);
+  --primary-bg: var(--gray-12);
+  --primary-bg-hover: oklch(from var(--gray-12) calc(l + 0.08) c h);
+  --primary-fg: var(--gray-1);
+  --danger: var(--red-11);
+  --danger-subtle: var(--red-3);
+  --stage: var(--gray-5);
+  --image-edge: var(--gray-8);
+  --shadow-1: 0 1px 2px oklch(0% 0 0 / 0.08), 0 1px 1px oklch(0% 0 0 / 0.04);
+  --shadow-2: 0 8px 24px oklch(0% 0 0 / 0.12), 0 2px 6px oklch(0% 0 0 / 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #131a17;
-    --paper-raised: #1b2420;
-    --paper-sunk: #0e1412;
-    --ink: #e6ede9;
-    --ink-muted: #9aaaa3;
-    --line: #2a3631;
-    --mat: #1d3a31;
-    --mat-deep: #163027;
-    --danger: #f2b8b5;
-    --primary-bg: var(--cut);
-    --primary-bg-hover: #ffd35c;
-    --primary-fg: #15211d;
-    --focus: var(--cut);
-    --toast-success: #1f7a46;
+    --gray-1: oklch(17.8% 0.003 67.7);
+    --gray-2: oklch(21.4% 0.002 67.7);
+    --gray-3: oklch(25.2% 0.004 84.6);
+    --gray-4: oklch(28.5% 0.006 91.6);
+    --gray-5: oklch(31.4% 0.006 78.2);
+    --gray-6: oklch(35.3% 0.007 84.6);
+    --gray-7: oklch(40.6% 0.009 88.7);
+    --gray-8: oklch(49.3% 0.010 84.6);
+    --gray-9: oklch(54.2% 0.011 87.5);
+    --gray-10: oklch(58.7% 0.012 89.8);
+    --gray-11: oklch(77.1% 0.012 84.6);
+    --gray-12: oklch(94.9% 0.004 91.4);
+
+    --clay-1: oklch(17.8% 0.015 41.5);
+    --clay-2: oklch(20.4% 0.020 40.9);
+    --clay-3: oklch(25.4% 0.044 42.3);
+    --clay-4: oklch(29.3% 0.064 43.6);
+    --clay-5: oklch(33.4% 0.073 42.6);
+    --clay-6: oklch(38.2% 0.076 43.6);
+    --clay-7: oklch(44.8% 0.084 43.7);
+    --clay-8: oklch(54.2% 0.103 44.6);
+    --clay-9: oklch(71.5% 0.119 45.3);
+    --clay-10: oklch(75.7% 0.108 46.3);
+    --clay-11: oklch(79.6% 0.101 48.9);
+    --clay-12: oklch(92.5% 0.035 47.4);
+
+    --red-9: oklch(68.0% 0.214 11.5);
+    --red-11: oklch(74.1% 0.163 9.2);
+    --red-3: oklch(25% 0.06 15);
+
+    --bg: var(--gray-1);
+    --bg-subtle: var(--gray-2);
+    --surface: var(--gray-2);
+    --surface-hover: var(--gray-3);
+    --surface-active: var(--gray-4);
+    --primary-bg-hover: oklch(from var(--gray-12) calc(l - 0.08) c h);
+    --danger: var(--red-9);
+    --stage: var(--gray-7);
+    --image-edge: var(--gray-9);
+    --shadow-1: 0 1px 2px oklch(0% 0 0 / 0.4);
+    --shadow-2: 0 8px 24px oklch(0% 0 0 / 0.5), 0 2px 6px oklch(0% 0 0 / 0.3);
   }
 }
 
@@ -54,10 +152,33 @@
 
 body {
   margin: 0;
-  font: 15px/1.45 var(--font);
-  color: var(--ink);
-  background: var(--paper);
+  font-family: var(--font);
+  font-size: var(--text-14);
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--bg);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Interligne serré pour les grandes tailles. */
+h1,
+h2,
+.text-20,
+.text-28 {
+  line-height: 1.2;
+}
+
+.text-20 {
+  font-size: var(--text-20);
+}
+
+.text-28 {
+  font-size: var(--text-28);
+}
+
+/* Chiffres tabulaires : dimensions, durées, compteurs. */
+.num {
+  font-variant-numeric: tabular-nums;
 }
 
 button {
@@ -74,62 +195,4 @@ button:disabled {
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-}
-
-.btn-primary {
-  border: 0;
-  border-radius: 9px;
-  padding: 9px 16px;
-  font-weight: 600;
-  color: var(--primary-fg);
-  background: var(--primary-bg);
-}
-
-.btn-primary:not(:disabled):hover {
-  background: var(--primary-bg-hover);
-}
-
-.btn-secondary {
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  padding: 8px 15px;
-  font-weight: 600;
-  color: var(--ink);
-  background: var(--paper-raised);
-}
-
-.btn-secondary:not(:disabled):hover {
-  border-color: var(--ink-muted);
-}
-
-.segmented {
-  display: flex;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--paper-sunk);
-}
-
-.segmented button {
-  flex: 1;
-  border: 0;
-  border-radius: 7px;
-  padding: 6px 4px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ink-muted);
-  background: transparent;
-}
-
-.segmented button[aria-pressed="true"] {
-  color: var(--ink);
-  background: var(--paper-raised);
-  box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgb(0 0 0 / 0.12);
-}
-
-.logo {
-  width: 24px;
-  height: 24px;
-  flex: none;
 }
