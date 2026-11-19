@@ -1,0 +1,62 @@
+/* Confirmation avant la première capture sur trois appareils. En-tête commun, contenu centré, sans colonne. */
+.confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  max-width: 520px; /* hors tokens : largeur de lecture du message */
+  margin: var(--space-7) auto;
+  padding: 0 var(--space-5);
+}
+
+.confirm > .icon {
+  color: var(--accent);
+}
+
+.confirm-title {
+  margin: 0;
+  font-size: var(--text-20);
+  font-weight: var(--weight-semibold);
+}
+
+.confirm-lead {
+  margin: 0;
+  font-size: var(--text-14);
+  color: var(--text-muted);
+}
+
+.confirm-points {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  list-style: none;
+  background: var(--surface);
+}
+
+.confirm-points li {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--text-14);
+}
+
+.confirm-points .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.confirm-note {
+  margin: 0;
+  font-size: var(--text-12);
+  color: var(--text-muted);
+}

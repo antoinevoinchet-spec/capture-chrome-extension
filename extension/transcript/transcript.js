@@ -3,6 +3,7 @@
 // `?v=<id>&from=history` : affichée depuis l'historique, sans relire YouTube.
 
 import { getTranscript } from '../lib/db.js';
+import { fillIcons, logo } from '../ui/icons.js';
 import { downloadEnd } from '../lib/download-end.js';
 import { DEFAULTS, TRANSCRIPT_FORMATS, TRANSCRIPT_TIMES, loadSettings, saveSettings } from '../lib/settings.js';
 import { clock, fileBase, render, toSrt, trackKey } from './format.js';
@@ -17,7 +18,7 @@ const CHECK =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>';
 
 const els = Object.fromEntries(
-  ['title', 'summary', 'copy', 'save-md', 'save-txt', 'save-srt', 'lang', 'times', 'format', 'link-form', 'link', 'loading', 'loading-text', 'cancel', 'problem', 'problem-text', 'allow', 'incomplete', 'preview', 'toast'].map((id) => [
+  ['title', 'summary', 'copy', 'save-md', 'save-txt', 'save-srt', 'lang', 'times', 'format', 'link-form', 'link', 'loading', 'loading-text', 'cancel', 'problem', 'problem-text', 'allow', 'incomplete', 'preview', 'toast', 'files-hint'].map((id) => [
     id.replace(/-(\w)/g, (_, letter) => letter.toUpperCase()),
     document.getElementById(id),
   ]),
@@ -39,7 +40,8 @@ let toastTimer;
 function setState(name) {
   document.body.dataset.state = name;
   const ready = name === 'ready' && Boolean(state.transcript);
-  for (const button of [els.copy, els.saveMd, els.saveTxt, els.saveSrt]) button.disabled = !ready;
+  // les actions n'existent qu'une fois le texte obtenu ; avant, et pendant une nouvelle lecture, elles sont cachées.
+  for (const el of [els.copy, els.saveMd, els.saveTxt, els.saveSrt, els.format, els.filesHint]) el.hidden = !ready;
   els.lang.disabled = !ready || !state.transcript.languages.length;
   els.loading.hidden = name !== 'loading';
   els.problem.hidden = name !== 'error';
@@ -271,6 +273,9 @@ buildSegmented(els.format, TRANSCRIPT_FORMATS, (key) => {
   saveSettings({ transcriptFormat: key });
   renderPreview();
 });
+
+fillIcons();
+document.querySelector('[data-logo]').replaceWith(logo(24));
 
 async function start() {
   const settings = await loadSettings();

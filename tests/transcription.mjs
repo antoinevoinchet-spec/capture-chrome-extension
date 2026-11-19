@@ -1217,10 +1217,11 @@ async function groupFenetre() {
   await youtubeRoute(context, []);
   const visible = (page) => page.evaluate(() => {
     const button = document.getElementById('transcript');
-    return { shown: Boolean(button) && !button.hidden, first: document.querySelector('.actions')?.firstElementChild?.id ?? null };
+    // la ligne vidéo vient juste sous « Page entière ».
+    return { shown: Boolean(button) && !button.hidden, first: document.getElementById('full')?.nextElementSibling?.id ?? null };
   });
   try {
-    await test('fenêtre : sur une vidéo watch?v=… → bouton visible, premier des actions', async () => {
+    await test('fenêtre : sur une vidéo watch?v=… → bouton visible, juste sous « Page entière »', async () => {
       const page = await openPopup(context, 'https://www.youtube.com/watch?v=manuel00001&t=42s');
       const got = await visible(page);
       const label = await page.evaluate(() => document.getElementById('transcript')?.textContent.replace(/\s+/g, ' ').trim());
@@ -1257,7 +1258,8 @@ async function groupFenetre() {
 
     await test('fenêtre : au clavier (Tab, Entrée) → page de transcription ouverte', async () => {
       const page = await openPopup(context, 'https://www.youtube.com/watch?v=manuel00001');
-      await page.keyboard.press('Tab');
+      // Tab : raccourcis de l'en-tête, « Page entière », puis la ligne vidéo.
+      for (let i = 0; i < 3; i++) await page.keyboard.press('Tab');
       const focused = await page.evaluate(() => document.activeElement?.id);
       const [opened] = await Promise.all([context.waitForEvent('page', { predicate: (p) => p.url().includes('transcript/transcript.html'), timeout: 5000 }), page.keyboard.press('Enter').catch(() => {})]); // la fenêtre se ferme aussitôt après avoir ouvert la page
       const url = opened.url();
@@ -1268,7 +1270,7 @@ async function groupFenetre() {
 
     await test('fenêtre : lien « Transcrire une vidéo » après « Convertir des images » → page vide avec le champ', async () => {
       const page = await openPopup(context, 'https://example.com/');
-      const order = await page.evaluate(() => [...document.querySelectorAll('.links > *')].map((el) => el.id));
+      const order = await page.evaluate(() => [...document.querySelectorAll('.list > *')].map((el) => el.id));
       const [opened] = await Promise.all([context.waitForEvent('page', { predicate: (p) => p.url().includes('transcript/transcript.html') }), page.locator('#transcribe').click()]);
       await opened.waitForLoadState();
       const got = await opened.evaluate(() => ({ state: document.body.dataset.state, field: !document.getElementById('link').closest('form').hidden, search: location.search }));

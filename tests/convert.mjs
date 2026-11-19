@@ -100,9 +100,17 @@ async function setResize(page, label, value) {
   if (value !== undefined) await page.locator('#resize-value').fill(String(value));
 }
 
+// la conversion part dès l'ajout. On attend sa fin ; si des fichiers restent à refaire (un réglage a changé),
+// on clique « Reconvertir », puis on attend de nouveau.
 async function convert(page) {
-  await page.locator('#convert').click();
-  await page.waitForFunction(() => document.body.dataset.state === 'idle', undefined, { timeout: 180_000 });
+  const idle = () =>
+    page.waitForFunction(() => document.body.dataset.state === 'idle' && !document.querySelector('.item[data-status="working"]'), undefined, { timeout: 180_000 });
+  await idle();
+  const again = page.locator('#convert');
+  if ((await again.isVisible()) && !(await again.isDisabled())) {
+    await again.click();
+    await idle();
+  }
 }
 
 const rows = (page) =>
@@ -413,7 +421,8 @@ async function groupConvert(context) {
   });
 
   await test('la page annonce l’image animée et les informations non conservées', async () => {
-    const text = await page.locator('.panel').textContent();
+    // la note du pied de colonne tient en deux lignes ; le détail (image animée, date, lieu) est dans la zone de dépôt.
+    const text = await page.locator('body').textContent();
     return { ok: /animée/.test(text) && /date/.test(text) && /lieu/.test(text) && /reste sur ton ordinateur/.test(text), detail: text.replace(/\s+/g, ' ').slice(-170) };
   });
   await page.close();
@@ -881,7 +890,7 @@ async function groupBatch(context, sw) {
     const page = await openConverter(context);
     const photo = await fixture('p48.heic');
     await add(page, [{ ...photo, name: 'p1.heic' }, { ...photo, name: 'p2.heic' }, { ...photo, name: 'p3.heic' }]);
-    await page.locator('#convert').click();
+    // La conversion part d'elle-même au dépôt.
     await page.waitForSelector('.item[data-status="working"]');
     const cancelVisible = await page.locator('#cancel').isVisible();
     await pause(600); // Au-delà du délai qui protège d'un double clic sur « Convertir ».
@@ -921,15 +930,16 @@ async function groupBatch(context, sw) {
     await convert(page);
     await countPosts(page);
     await add(page, await small(page, 'c.png'));
+    // la nouvelle image part aussitôt ; « Convertir » n'est pas proposé pendant ce temps.
     const before = await rows(page);
-    const label = await page.locator('#convert').textContent();
+    const label = (await page.locator('#convert').isVisible()) ? await page.locator('#convert').textContent() : '(caché)';
     const off = await page.locator('#download-all').isDisabled();
     await convert(page);
     const after = await rows(page);
     const posted = await page.evaluate(() => window.posted);
     const download = await page.locator('#download-all').textContent();
     await page.close();
-    return { ok: before[0].status === 'done' && before[2].status === 'waiting' && /Convertir \(1\)/.test(label) && off && posted === 1 && after.every((row) => row.status === 'done') && /3 images/.test(download), detail: `${label}, envois ${posted}, ${download}` };
+    return { ok: before[0].status === 'done' && ['working', 'done'].includes(before[2].status) && label === '(caché)' && posted === 1 && after.every((row) => row.status === 'done') && /3 images/.test(download), detail: `${label}, envois ${posted}, ${download}` };
   });
   await test('retirer une image refait le PDF sans reconvertir', async () => {
     const page = await openConverter(context);
@@ -951,7 +961,6 @@ async function groupBatch(context, sw) {
   await test('les réglages et la liste sont verrouillés pendant une conversion', async () => {
     const page = await openConverter(context);
     await add(page, await fixture('p48.heic'));
-    await page.locator('#convert').click();
     await page.waitForSelector('.item[data-status="working"]');
     const format = await page.locator('#format button').first().isDisabled();
     const quality = await page.locator('#quality button').first().isDisabled();
@@ -1014,10 +1023,11 @@ async function groupBatch(context, sw) {
   });
   await test('les libellés des boutons suivent le lot', async () => {
     const page = await openConverter(context);
-    const empty = await page.locator('#convert').textContent();
+    // pas de bouton « Convertir » au départ, et la conversion part au dépôt sans lui.
+    const empty = (await page.locator('#convert').isHidden()) ? 'caché' : await page.locator('#convert').textContent();
     await add(page, await small(page, 'a.png'));
-    const one = await page.locator('#convert').textContent();
     await convert(page);
+    const one = (await rows(page))[0].status;
     const singular = await page.locator('#download-all').textContent();
     await add(page, await small(page, 'b.png'));
     await convert(page);
@@ -1027,7 +1037,7 @@ async function groupBatch(context, sw) {
     const pdf = await page.locator('#download-all').textContent();
     await setFormat(page, 'JPG');
     await page.close();
-    return { ok: empty.trim() === 'Convertir' && one.trim() === 'Convertir (1)' && /l’image/.test(singular) && /Tout télécharger \(2 images\)/.test(plural) && /Télécharger le PDF/.test(pdf), detail: [empty, one, singular, plural, pdf].join(' ; ') };
+    return { ok: empty === 'caché' && one === 'done' && /l’image/.test(singular) && /Tout télécharger \(2 images\)/.test(plural) && /Télécharger le PDF/.test(pdf), detail: [empty, one, singular, plural, pdf].join(' ; ') };
   });
   await test('le message propose d’afficher dans le Finder', async () => {
     const page = await openConverter(context);
@@ -1164,11 +1174,14 @@ async function groupBatch(context, sw) {
     await page.close();
     return { ok: /^Image enregistrée/.test(text), detail: text.slice(0, 80) };
   });
-  await test('un double clic sur Convertir lance bien la conversion', async () => {
+  // le seul bouton de conversion qui reste est « Reconvertir », après un changement de réglage.
+  await test('un double clic sur Reconvertir lance bien la conversion', async () => {
     const report = [];
     for (const delay of [0, 120, 250]) {
       const page = await openConverter(context);
       await add(page, await fixture('p12.heic'));
+      await convert(page);
+      await setQuality(page, 'Moyenne');
       const box = await page.locator('#convert').boundingBox();
       const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
       await page.mouse.click(x, y);
@@ -1177,6 +1190,7 @@ async function groupBatch(context, sw) {
       await page.waitForFunction(() => document.body.dataset.state === 'idle', undefined, { timeout: 120_000 });
       const [row] = await rows(page);
       report.push(row.status);
+      await setQuality(page, 'Haute');
       await page.close();
     }
     return { ok: report.every((status) => status === 'done'), detail: report.join() };
@@ -1184,7 +1198,6 @@ async function groupBatch(context, sw) {
   await test('Annuler reste possible juste après ce délai', async () => {
     const page = await openConverter(context);
     await add(page, await fixture('p48.heic'));
-    await page.locator('#convert').click();
     await pause(700);
     await page.locator('#cancel').click();
     await page.waitForFunction(() => document.body.dataset.state === 'idle');
@@ -1228,9 +1241,12 @@ async function groupBatch(context, sw) {
     const page = await openConverter(context);
     const gone = path.join(WORK, 'parti.png');
     await fs.writeFile(gone, (await small(page, 'parti.png')).buffer);
+    // la conversion part au dépôt ; un réglage invalide la retient, le temps de déplacer le fichier.
+    await setResize(page, 'Largeur', '');
     await page.setInputFiles('#files', gone);
     await add(page, await small(page, 'reste.png'));
     await fs.rm(gone);
+    await setResize(page, 'Origine');
     await convert(page);
     const list = await rows(page);
     await page.close();
@@ -1270,6 +1286,10 @@ async function groupPreview(context) {
   const page = await openConverter(context);
   await page.setViewportSize(BIG_SCREEN);
   const clearAll = () => page.locator('#clear').click();
+  // la conversion part au dépôt. Un réglage de taille invalide la retient : on regarde l'aperçu d'avant conversion.
+  const hold = () => setResize(page, 'Largeur', '');
+  const release = () => setResize(page, 'Origine');
+  await hold();
   await test('un screen de téléphone a un grand aperçu dès son ajout', async () => {
     await add(page, await image(page, 'screen.png', { width: 1179, height: 2556 }));
     await waitPreview(page);
@@ -1302,31 +1322,37 @@ async function groupPreview(context) {
   await test('changer un réglage garde l’aperçu', async () => {
     await add(page, await image(page, 'garde.png', { width: 1200, height: 800 }));
     await waitPreview(page);
+    await release();
     await convert(page);
     await setQuality(page, 'Moyenne');
     const box = await previewBox(page);
     await setQuality(page, 'Haute');
     await clearAll();
+    await hold();
     return { ok: box.kind === 'img' && box.loaded, detail: JSON.stringify(box) };
   });
   await test('une photo HEIC annonce son aperçu, puis le montre, net', async () => {
     await add(page, await fixture('bands-p3.heic'));
     await page.waitForSelector('.item-thumb-note');
     const before = await previewBox(page);
+    await release();
     await convert(page);
     const after = await previewBox(page);
     await setQuality(page, 'Moyenne');
     const kept = await previewBox(page);
     await setQuality(page, 'Haute');
     await clearAll();
+    await hold();
     return { ok: before.kind === 'aucun' && before.note && after.kind === 'canvas' && after.width >= 220 && after.pixels >= after.width * 2 && kept.kind === 'canvas', detail: `${JSON.stringify(before)} ; ${JSON.stringify(after)} ; ${JSON.stringify(kept)}` };
   });
   await test('un fichier illisible n’affiche pas d’image cassée', async () => {
     await add(page, textFile('notes.txt'));
     await page.waitForSelector('.item-thumb-note');
+    await release();
     await convert(page);
     const box = await previewBox(page);
     await clearAll();
+    await hold();
     return { ok: box.kind === 'aucun' && !box.note, detail: JSON.stringify(box) };
   });
   await test('retirer une image libère son aperçu', async () => {
@@ -1361,24 +1387,20 @@ async function groupFinish(context) {
       await page.keyboard.press('Tab');
     }
     await add(page, await image(page, 'a.png', { width: 60, height: 40 }));
-    await page.locator('#convert').focus();
-    await page.keyboard.press('Enter');
     await page.waitForFunction(() => document.body.dataset.state === 'idle' && !document.getElementById('download-all').disabled);
     await page.locator('#download-all').focus();
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => window.saved.length === 1);
     const outlined = await page.evaluate(() => getComputedStyle(document.activeElement).outlineStyle);
     await page.close();
-    const ok = reached.includes('JPG') && reached.includes('Haute') && reached.includes('Origine') && reached.includes('files');
+    const ok = reached.includes('JPG') && reached.includes('Haute') && reached.includes('Origine') && reached.includes('choose');
     return { ok: ok && outlined !== 'none', detail: `${reached.join(' > ')} ; contour ${outlined}` };
   });
   await test('le focus suit la conversion et reste sur une ligne', async () => {
     const page = await openConverter(context);
     await spyDownloads(page);
     await add(page, [await image(page, 'a.png', { width: 60, height: 40 }), await image(page, 'b.png', { width: 60, height: 40 })]);
-    await page.locator('#convert').focus();
-    await page.keyboard.press('Enter');
-    await page.waitForFunction(() => document.body.dataset.state === 'idle');
+    await page.waitForFunction(() => document.body.dataset.state === 'idle' && !document.querySelector('.item[data-status="waiting"], .item[data-status="working"]'));
     const afterConvert = await page.evaluate(() => document.activeElement.id);
     await page.locator('.item').first().locator('.item-save').focus();
     await page.keyboard.press('Enter');

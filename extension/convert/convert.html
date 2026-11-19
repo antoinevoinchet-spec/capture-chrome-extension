@@ -5,35 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Convertir des images</title>
     <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="../ui/components.css" />
     <link rel="stylesheet" href="../viewer/viewer.css" />
     <link rel="stylesheet" href="convert.css" />
   </head>
   <body data-state="loading">
-    <header class="top">
-      <div class="brand">
-        <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
-          <rect width="24" height="24" rx="5.4" fill="#23453b" />
-          <rect x="3.5" y="7.7" width="17" height="11.3" rx="1.9" fill="#fff" />
-          <path d="M8.7 5.6h6.6l1.4 2.4H7.3z" fill="#fff" />
-          <circle cx="12" cy="13.4" r="4" fill="#23453b" />
-          <circle cx="12" cy="13.4" r="2.6" fill="#f4c542" />
-          <circle cx="18" cy="9.9" r="0.7" fill="#23453b" />
-        </svg>
-        <span>Capture</span>
-      </div>
+    <header class="app-header">
+      <div class="brand"><span data-logo></span><span>Capture</span></div>
       <div class="heading">
-        <h1>Convertir des images</h1>
-        <p id="summary" class="meta" role="status"></p>
+        <h1 class="app-header-title">Convertir des images</h1>
+        <p id="summary" class="meta num" role="status"></p>
       </div>
-      <div class="top-actions">
+      <div class="app-header-actions">
         <button id="cancel" class="btn-secondary" type="button" hidden>Annuler</button>
-        <button id="convert" class="btn-primary" type="button" disabled>Convertir</button>
-        <button id="download-all" class="btn-secondary" type="button" disabled>Tout télécharger</button>
+        <button id="convert" class="btn-secondary" type="button" hidden disabled>Reconvertir</button>
+        <button id="download-all" class="btn-primary" type="button" disabled>Tout télécharger</button>
       </div>
     </header>
 
-    <div class="layout">
-      <aside class="panel">
+    <div class="app-body">
+      <aside class="app-side panel">
         <section>
           <h2 id="format-label">Format</h2>
           <div id="format" class="segmented" role="group" aria-labelledby="format-label"></div>
@@ -49,27 +40,26 @@
           <div id="resize" class="segmented" role="group" aria-labelledby="resize-label"></div>
           <label id="resize-field" class="resize-field" hidden>
             <span id="resize-name" class="visually-hidden"></span>
-            <input id="resize-value" type="number" min="1" step="1" inputmode="numeric" />
+            <input id="resize-value" class="input num" type="number" min="1" step="1" inputmode="numeric" />
             <span id="resize-unit" class="resize-unit"></span>
           </label>
           <p id="resize-error" class="field-error" role="alert" hidden></p>
           <p class="hint">Proportions gardées. Une image n’est jamais agrandie.</p>
         </section>
-        <p class="convert-note">
-          Tout reste sur ton ordinateur : rien n’est envoyé, et rien n’est gardé après la fermeture de cet onglet. La date, le lieu et l’appareil de
-          la photo ne sont pas conservés. Une image animée devient fixe.
-        </p>
+        <p class="convert-note"><span>Tout reste sur ton ordinateur : rien n’est envoyé ni gardé.</span></p>
       </aside>
 
-      <main class="mat convert-mat">
-        <label id="drop" class="drop">
-          <input id="files" class="visually-hidden" type="file" multiple accept="image/*,.heic,.heif" />
-          <span class="drop-title">Dépose tes images ici, clique pour les choisir, ou colle avec ⌘V</span>
-          <span class="drop-formats">PNG, JPG, WebP, HEIC, AVIF, GIF ou BMP</span>
-        </label>
+      <main class="app-main mat convert-mat">
+        <div id="drop" class="dropzone drop">
+          <input id="files" class="visually-hidden" type="file" multiple accept="image/*,.heic,.heif" tabindex="-1" aria-hidden="true" />
+          <span data-icon="download" data-size="24"></span>
+          <span class="drop-title">Dépose tes images ici, ou colle avec ⌘V</span>
+          <button id="choose" class="btn-secondary" type="button">Choisir des fichiers</button>
+          <span class="drop-formats">PNG, JPG, WebP, HEIC, AVIF, GIF ou BMP. La date, le lieu et l’appareil de la photo ne sont pas conservés ; une image animée devient fixe.</span>
+        </div>
         <div id="list-head" class="list-head" hidden>
-          <span id="list-count"></span>
-          <button id="clear" class="list-clear" type="button">Tout retirer</button>
+          <span id="list-count" class="num"></span>
+          <button id="clear" class="btn-quiet list-clear" type="button">Tout retirer</button>
         </div>
         <ol id="list" class="items"></ol>
       </main>

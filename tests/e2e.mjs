@@ -5,7 +5,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { EXTENSION, capture, check, copyAndRead, launch, openTab, prepareExtension, results, serve } from './lib.mjs';
+import { EXTENSION, capture, check, copyAndRead, launch, openTab, partAction, prepareExtension, results, serve } from './lib.mjs';
 
 const HERE = import.meta.dirname;
 const WORK = path.resolve(process.argv[2] ?? path.join(HERE, 'out'));
@@ -166,7 +166,7 @@ async function testLongPage(context, sw, url) {
   const third = await copyAndRead(viewer, header);
   check('le bouton suit le défilement : image 3 copiée', /image 3$/.test(label3) && third.size === `2560 × ${parts[2].height}`, `${label3} → ${third.size}`);
 
-  const second = await copyAndRead(viewer, viewer.locator('figure.part').nth(1).getByRole('button', { name: 'Copier' }));
+  const second = await copyAndRead(viewer, partAction(viewer, 1, 'copy'));
   check('bouton « Copier » posé sur une image (image 2)', second.size === `2560 × ${parts[1].height}`, `« ${second.message} » / ${second.size}`);
 
   await viewer.locator('figure.part').nth(3).locator('canvas').click({ button: 'right' });

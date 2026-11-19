@@ -1,4 +1,8 @@
-/* Page du convertisseur : même en-tête, même colonne et même tapis que la page de résultats (viewer.css). */
+/* Convertisseur : même gabarit que la page des captures (viewer.css et ui/components.css). */
+
+body {
+  grid-template-rows: auto 1fr;
+}
 
 .visually-hidden {
   position: absolute;
@@ -9,116 +13,111 @@
   white-space: nowrap;
 }
 
-.segmented button:disabled {
-  opacity: 0.55;
-}
-
-/* Taille */
+/* ---------- Colonne de réglages ---------- */
 
 .resize-field {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
-.resize-field input {
-  width: 110px;
-  padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  font: inherit;
-  color: var(--ink);
-  background: var(--paper-raised);
-  font-variant-numeric: tabular-nums;
+.resize-field .input {
+  width: 112px; /* hors tokens : champ de 5 chiffres */
 }
 
 .resize-unit {
-  font-size: 13px;
-  color: var(--ink-muted);
+  font-size: var(--text-13);
+  color: var(--text-muted);
 }
 
 .field-error {
-  margin: 8px 0 0;
-  font-size: 13px;
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-12);
   color: var(--danger);
 }
 
-.convert-note {
-  margin: 0;
-  padding-top: 18px;
-  border-top: 1px solid var(--line);
-  font-size: 12.5px;
-  color: var(--ink-muted);
+/* La note de confidentialité tient en deux lignes, en pied de colonne. */
+.app-side.panel {
+  display: flex;
+  flex-direction: column;
 }
 
-/* Zone de dépôt : les pointillés reprennent ceux des coupes de la page de résultats. */
+.convert-note {
+  margin: auto 0 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-12);
+  color: var(--text-muted);
+}
+
+/* ---------- Zone de dépôt : tout l'espace tant que la liste est vide, un bandeau ensuite ---------- */
 
 .convert-mat {
-  padding-top: 28px;
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--space-5);
 }
 
 .drop {
-  position: relative;
-  display: grid;
-  justify-items: center;
-  gap: 4px;
-  max-width: 860px;
+  flex: 1;
+  width: 100%;
+  max-width: 860px; /* hors tokens : largeur de la liste */
   margin: 0 auto;
-  padding: 30px 24px;
-  border: 2px dashed var(--cut);
-  border-radius: 12px;
-  text-align: center;
-  background: rgb(0 0 0 / 0.14);
   cursor: pointer;
 }
 
-.drop:hover,
-.drop.over {
-  background: rgb(244 197 66 / 0.14);
+.drop .drop-title {
+  font-size: var(--text-16);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
 }
 
-.drop:has(input:focus-visible) {
-  outline: 2px solid var(--cut);
-  outline-offset: 3px;
+.drop .drop-formats {
+  max-width: 440px; /* hors tokens : largeur de lecture */
+  font-size: var(--text-12);
+  color: var(--text-muted);
 }
 
-.drop-title {
-  font-size: 16px;
-  font-weight: 600;
+.drop.is-over .drop-formats {
+  color: var(--accent-text);
 }
 
-.drop-formats {
-  font-size: 13px;
-  color: var(--on-mat-muted);
+/* Une fois la liste remplie, la zone se réduit en bandeau au-dessus d'elle. */
+.convert-mat:has(.item) .drop {
+  flex: none;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
 }
 
-/* Liste */
+.convert-mat:has(.item) .drop .drop-formats {
+  display: none;
+}
+
+/* ---------- Liste ---------- */
 
 .list-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  max-width: 860px;
-  margin: 22px auto 8px;
-  font-size: 13px;
-  color: var(--on-mat-muted);
+  width: 100%;
+  max-width: 860px; /* hors tokens : largeur de la liste */
+  margin: var(--space-5) auto var(--space-2);
+  font-size: var(--text-13);
+  color: var(--text);
 }
 
 .list-clear {
-  padding: 2px 0;
-  border: 0;
-  font-size: 13px;
-  color: var(--on-mat);
-  background: none;
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  color: var(--text);
 }
 
 .items {
   display: grid;
-  gap: 6px;
-  max-width: 860px;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: 860px; /* hors tokens : largeur de la liste */
   margin: 0 auto;
   padding: 0;
   list-style: none;
@@ -126,24 +125,25 @@
 
 .item {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) auto;
+  grid-template-columns: 240px minmax(0, 1fr) auto; /* hors tokens : largeur de la vignette */
   align-items: center;
-  gap: 18px;
-  padding: 10px 12px 10px 10px;
-  border-radius: 10px;
-  color: var(--ink);
-  background: var(--paper-raised);
-  box-shadow: 0 8px 20px -14px rgb(0 0 0 / 0.7);
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
 }
 
 .item-thumb {
   display: grid;
   place-items: center;
-  width: 240px;
-  min-height: 120px;
+  width: 240px; /* hors tokens : largeur de la vignette */
+  min-height: 120px; /* hors tokens : hauteur de la vignette */
   overflow: hidden;
-  border-radius: 6px;
-  background: var(--paper-sunk);
+  border-radius: var(--radius-s);
+  background: var(--bg-subtle);
 }
 
 .item-thumb img,
@@ -151,15 +151,15 @@
   display: block;
   width: auto;
   height: auto;
-  max-width: 240px;
-  max-height: 240px;
+  max-width: 240px; /* hors tokens : largeur de la vignette */
+  max-height: 240px; /* hors tokens : hauteur de la vignette */
 }
 
 .item-thumb-note {
-  padding: 8px;
-  font-size: 12.5px;
+  padding: var(--space-2);
+  font-size: var(--text-12);
   text-align: center;
-  color: var(--ink-muted);
+  color: var(--text-muted);
 }
 
 .item[data-status="error"] .item-thumb-note {
@@ -169,16 +169,16 @@
 .item-name {
   display: block;
   overflow: hidden;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--text-14);
+  font-weight: var(--weight-semibold);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .item-detail {
   display: block;
-  font-size: 13px;
-  color: var(--ink-muted);
+  font-size: var(--text-13);
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -192,7 +192,7 @@
 
 @keyframes item-working {
   to {
-    background: var(--cut);
+    background: var(--accent-subtle);
   }
 }
 
@@ -203,78 +203,56 @@
 .item-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
-}
-
-.item-save {
-  padding: 5px 11px;
-  font-size: 13px;
+  gap: var(--space-1);
 }
 
 .item-icon {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: var(--control-s);
+  height: var(--control-s);
   border: 0;
-  border-radius: 7px;
-  font-size: 15px;
+  border-radius: var(--radius-s);
+  font-size: var(--text-14);
   line-height: 1;
-  color: var(--ink-muted);
+  color: var(--text-muted);
   background: transparent;
 }
 
 .item-icon:not(:disabled):hover {
-  color: var(--ink);
-  background: var(--paper-sunk);
-}
-
-.items :focus-visible {
-  outline-color: var(--ink);
-}
-
-@media (prefers-color-scheme: dark) {
-  .items :focus-visible {
-    outline-color: var(--cut);
-  }
+  color: var(--text);
+  background: var(--surface-hover);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .item[data-status="working"] .item-thumb {
     animation: none;
-    background: var(--cut);
+    background: var(--accent-subtle);
   }
 }
 
+/* hors tokens : point de rupture pour une fenêtre étroite */
 @media (max-width: 900px) {
   .brand {
     width: auto;
   }
 
-  .layout {
-    grid-template-columns: 220px 1fr;
-  }
-
-  .panel {
-    padding: 14px;
-  }
-
   .convert-mat {
-    padding-inline: 14px;
+    padding-inline: var(--space-3);
   }
 
   .item {
-    grid-template-columns: 150px minmax(0, 1fr);
+    grid-template-columns: 152px minmax(0, 1fr); /* hors tokens : vignette réduite */
   }
 
   .item-thumb {
-    width: 150px;
+    width: 152px; /* hors tokens : vignette réduite */
   }
 
   .item-thumb img,
   .item-thumb canvas {
-    max-width: 150px;
-    max-height: 200px;
+    max-width: 152px; /* hors tokens : vignette réduite */
+    max-height: 200px; /* hors tokens : vignette réduite */
   }
 
   .item-actions {

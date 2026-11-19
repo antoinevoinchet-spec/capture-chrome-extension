@@ -1,30 +1,35 @@
-/* Page de transcription : même en-tête, même colonne et même tapis que la page de résultats (viewer.css). */
+/* Transcription : même gabarit que la page des captures (viewer.css et ui/components.css). */
+
+/* Pas de bandeau d'enregistrement ici : le corps de page prend toute la hauteur restante. */
+body {
+  grid-template-rows: auto 1fr;
+}
 
 .downloads {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
-.select {
+.app-side .select {
   width: 100%;
-  padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  font: inherit;
-  color: var(--ink);
-  background: var(--paper-raised);
+}
+
+/* La note tient en pied de colonne. */
+.app-side.panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .transcript-note {
-  margin: 0;
-  padding-top: 18px;
-  border-top: 1px solid var(--line);
-  font-size: 12.5px;
-  color: var(--ink-muted);
+  margin: auto 0 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-12);
+  color: var(--text-muted);
 }
 
 .transcript-mat {
-  padding-top: 28px;
+  padding-top: var(--space-5);
 }
 
 .link-form,
@@ -32,56 +37,62 @@
 .problem,
 .incomplete,
 .preview {
-  max-width: 860px;
+  max-width: 860px; /* hors tokens : largeur de lecture, la même que la liste du convertisseur */
   margin-right: auto;
   margin-left: auto;
 }
 
 .link-label {
   display: block;
-  margin-bottom: 8px;
-  font-size: 16px;
-  font-weight: 600;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-16);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
 }
 
 .link-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
-.link-row input {
+.link-row .input {
   flex: 1;
   min-width: 0;
-  padding: 9px 12px;
-  border: 2px dashed var(--cut);
-  border-radius: 10px;
-  font: inherit;
-  color: var(--on-mat);
-  background: rgb(0 0 0 / 0.14);
+  height: var(--control-l);
 }
 
-.link-row input::placeholder {
-  color: var(--on-mat-muted);
+.link-row .btn-primary {
+  height: var(--control-l);
 }
 
-/* Le lien se cache dès qu'une vidéo est lue ou affichée ; il reste sur la page vide et après un échec. */
-body:is([data-state="loading"], [data-state="ready"]) .link-form {
+/* Une fois un texte affiché, le champ reste au-dessus pour une autre vidéo, en plus discret. */
+body[data-state="ready"] .link-form {
+  margin-bottom: var(--space-4);
+}
+
+body[data-state="ready"] .link-label {
+  font-size: var(--text-13);
+  font-weight: var(--weight-medium);
+}
+
+/* Pendant la lecture, seul l'état de la lecture compte. */
+body[data-state="loading"] .link-form {
   display: none;
 }
 
 .status {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-top: 24px;
-  font-variant-numeric: tabular-nums;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  color: var(--text);
 }
 
 .spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--on-mat-muted);
-  border-top-color: var(--cut);
+  width: 16px; /* hors tokens : taille du disque de chargement */
+  height: 16px; /* hors tokens : taille du disque de chargement */
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.9s linear infinite;
 }
@@ -101,12 +112,8 @@ body:is([data-state="loading"], [data-state="ready"]) .link-form {
 .problem {
   display: grid;
   justify-items: start;
-  gap: 12px;
-  margin-top: 24px;
-  padding: 16px 18px;
-  border-radius: 10px;
-  color: var(--ink);
-  background: var(--paper-raised);
+  gap: var(--space-3);
+  margin-top: var(--space-5);
 }
 
 .problem p {
@@ -115,51 +122,30 @@ body:is([data-state="loading"], [data-state="ready"]) .link-form {
 
 .incomplete {
   margin-top: 0;
-  margin-bottom: 12px;
-  padding: 10px 14px;
-  border-left: 3px solid var(--cut);
-  border-radius: 6px;
-  color: var(--on-mat);
-  background: rgb(0 0 0 / 0.2);
+  margin-bottom: var(--space-3);
 }
 
-/* L'aperçu est posé sur le tapis comme une feuille. */
+/* L'aperçu est posé sur le fond comme une feuille. */
 .preview {
   margin-top: 0;
-  padding: 28px 32px;
-  border-radius: 10px;
-  font: 14.5px/1.6 var(--font);
+  padding: var(--space-6) var(--space-7);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  font: var(--text-14) / 1.6 var(--font);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--ink);
-  background: var(--paper-raised);
-  box-shadow: 0 8px 20px -14px rgb(0 0 0 / 0.7);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
 }
 
+/* hors tokens : point de rupture pour une fenêtre étroite */
 @media (max-width: 760px) {
-  body {
-    height: auto;
-    overflow: auto;
-  }
-
-  .top {
-    flex-wrap: wrap;
-  }
-
-  .layout {
-    grid-template-columns: 1fr;
-  }
-
-  .panel {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
   .transcript-mat {
-    padding: 20px 16px 48px;
+    padding: var(--space-5) var(--space-4) var(--space-7);
   }
 
   .preview {
-    padding: 20px;
+    padding: var(--space-5);
   }
 }

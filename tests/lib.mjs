@@ -31,7 +31,7 @@ export function check(name, ok, detail = '') {
 
 // Ce que le vrai manifeste doit dire à ce lot. Mis à jour en même temps que lui : les suites de tous les lots le lisent.
 export const MANIFEST_EXPECTED = {
-  version: '0.6.0',
+  version: '0.7.0',
   permissions: ['activeTab', 'scripting', 'downloads', 'storage', 'contextMenus', 'offscreen', 'debugger'],
   optional_host_permissions: ['http://*/*', 'https://*/*'],
 };
@@ -211,4 +211,75 @@ async function seedInPage({ heightPoints, scale, widthPoints, createdAt, group, 
     truncated: false,
     ...(group ? { group } : {}),
   });
+}
+
+// ---- Aides du design system (tests/design.mjs) ----
+
+// Rapport de contraste WCAG entre deux couleurs [r, g, b] (0-255).
+export function luminance([r, g, b]) {
+  const lin = (c) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+export function contrast(a, b) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// Distance euclidienne entre deux couleurs [r, g, b].
+export const colorDistance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+// Peint `cssColor` (n'importe quelle syntaxe CSS, oklch() et var() compris) sur un canvas 1×1 de la page et lit le pixel.
+// Une couleur var(--x) est d'abord résolue par getComputedStyle sur un élément de la page.
+export function resolveColor(page, cssColor) {
+  return page.evaluate((color) => {
+    const probe = document.createElement('span');
+    probe.style.color = color;
+    document.body.append(probe);
+    const computed = getComputedStyle(probe).color;
+    probe.remove();
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, 1, 1);
+    ctx.fillStyle = computed;
+    ctx.fillRect(0, 0, 1, 1);
+    return [...ctx.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+  }, cssColor);
+}
+
+// Captures d'écran du groupe `photos` : dans <dossier>/photos/. `setPhotoDir` est appelé par la suite au démarrage.
+let photoDir = null;
+export function setPhotoDir(dir) {
+  photoDir = dir;
+}
+export async function shoot(page, file, options = {}) {
+  if (!photoDir) throw new Error('shoot : dossier de photos non réglé');
+  await fs.mkdir(photoDir, { recursive: true });
+  const target = path.join(photoDir, file.endsWith('.png') ? file : `${file}.png`);
+  await page.screenshot({ path: target, ...options });
+  return target;
+}
+
+// Action d'une image de la page des captures, par son bouton « ⋯ » puis l'élément du menu.
+// `action` : 'copy', 'download' ou 'annotate'. L'objet rendu s'utilise comme un bouton : click(), isEnabled().
+export function partAction(page, index, action) {
+  const more = () => page.locator('figure.part').nth(index).locator('.part-more');
+  const item = page.locator(`#image-menu [data-action="${action}"]`);
+  return {
+    async click(options) {
+      await more().click();
+      await item.click(options);
+    },
+    async isEnabled() {
+      await more().click();
+      const enabled = await item.isEnabled();
+      await page.keyboard.press('Escape');
+      return enabled;
+    },
+  };
 }

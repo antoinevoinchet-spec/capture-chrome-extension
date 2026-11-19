@@ -4,83 +4,97 @@
     <meta charset="utf-8" />
     <title>Capture</title>
     <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="../ui/components.css" />
     <link rel="stylesheet" href="popup.css" />
   </head>
-  <body>
+  <!-- Caché jusqu'à ce que popup.js sache si la page est une vidéo YouTube : rien ne bouge après le premier affichage. -->
+  <body class="is-loading">
     <header class="head">
-      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
-        <rect width="24" height="24" rx="5.4" fill="#23453b" />
-        <rect x="3.5" y="7.7" width="17" height="11.3" rx="1.9" fill="#fff" />
-        <path d="M8.7 5.6h6.6l1.4 2.4H7.3z" fill="#fff" />
-        <circle cx="12" cy="13.4" r="4" fill="#23453b" />
-        <circle cx="12" cy="13.4" r="2.6" fill="#f4c542" />
-        <circle cx="18" cy="9.9" r="0.7" fill="#23453b" />
-      </svg>
-      <span>Capture</span>
+      <span data-logo></span>
+      <span class="head-title">Capture</span>
+      <button id="shortcuts" class="btn-icon" type="button" aria-label="Raccourcis clavier" title="Raccourcis clavier"><span data-icon="keyboard"></span></button>
     </header>
 
-    <div class="actions">
-      <button id="transcript" class="action" type="button" hidden>
-        <span>
-          <span class="action-title">Transcription de cette vidéo</span>
-          <span class="action-desc">Le texte de la vidéo, avec ses chapitres et ses repères de temps, à copier ou télécharger. Ta vidéo continue sans interruption.</span>
-        </span>
-      </button>
-      <button id="full" class="action primary" type="button">
+    <main class="stack">
+      <button id="full" class="action-main" type="button">
+        <span data-icon="full" data-size="20"></span>
         <span>
           <span class="action-title">Page entière</span>
           <span class="action-desc">Toute la page, découpée en images nettes</span>
         </span>
         <kbd data-shortcut="capture-full" hidden></kbd>
       </button>
-      <button id="visible" class="action" type="button">
-        <span>
-          <span class="action-title">Partie visible</span>
-          <span class="action-desc">Ce qui est affiché à l'écran</span>
-        </span>
-        <kbd data-shortcut="capture-visible" hidden></kbd>
-      </button>
-      <button id="pick-block" class="action" type="button">
-        <span>
-          <span class="action-title">Un bloc</span>
-          <span class="action-desc">Une carte, une liste, un article, même plus haut que l'écran</span>
-        </span>
-        <kbd data-shortcut="capture-pick" hidden></kbd>
-      </button>
-      <button id="pick-zone" class="action" type="button">
-        <span>
-          <span class="action-title">Une zone</span>
-          <span class="action-desc">Un rectangle tracé à la souris</span>
-        </span>
-      </button>
-      <button id="devices" class="action" type="button">
-        <span>
-          <span class="action-title">Téléphone, tablette, ordinateur</span>
-          <span class="action-desc">Trois images de cette page, rouverte dans un onglet à part : le tien n'est pas touché. Chrome affiche un bandeau de débogage le temps de la capture. La page y repart de son état initial, sans ce que tu y as saisi ou ouvert.</span>
-        </span>
-      </button>
-    </div>
 
-    <p id="shortcut-hint" class="shortcut-hint" hidden>
-      <span id="shortcut-hint-text"></span>
-      <button id="set-shortcut" class="inline-link" type="button">Choisir un raccourci</button>
-    </p>
+      <button id="transcript" class="list-row video-row" type="button" hidden>
+        <span data-icon="transcript"></span>
+        <span class="list-row-label">Transcription de cette vidéo</span>
+        <span data-icon="chevron"></span>
+      </button>
 
-    <div id="status" class="status" role="status" hidden>
-      <div class="bar"><div id="bar-fill"></div></div>
-      <p id="status-text"></p>
-      <button id="cancel" class="inline-link" type="button" hidden>Annuler</button>
-    </div>
-    <p id="error" class="error" role="alert" hidden></p>
+      <div class="tiles">
+        <button id="visible" class="tile" type="button">
+          <span data-icon="visible" data-size="20"></span>
+          <span>Visible</span>
+          <kbd data-shortcut="capture-visible" hidden></kbd>
+        </button>
+        <button id="pick-block" class="tile" type="button">
+          <span data-icon="block" data-size="20"></span>
+          <span>Un bloc</span>
+          <kbd data-shortcut="capture-pick" hidden></kbd>
+        </button>
+        <button id="pick-zone" class="tile" type="button">
+          <span data-icon="zone" data-size="20"></span>
+          <span>Une zone</span>
+        </button>
+      </div>
 
-    <div class="links">
-      <button id="recent" class="link" type="button">Voir les captures récentes</button>
-      <button id="convert" class="link" type="button">Convertir des images</button>
-      <button id="transcribe" class="link" type="button">Transcrire une vidéo</button>
-    </div>
+      <!-- Zone de statut, sous les tuiles : quand elle apparaît, seul ce qui est dessous se déplace. -->
+      <div class="messages">
+      <div id="status" class="status" role="status" hidden>
+        <div class="progress"><div id="bar-fill" class="progress-bar"></div></div>
+        <div class="status-line">
+          <p id="status-text" class="num"></p>
+          <button id="cancel" class="btn-quiet" type="button" hidden>Annuler</button>
+        </div>
+      </div>
+      <div id="error" class="banner is-error" role="alert" hidden><span data-icon="error"></span><span id="error-text"></span></div>
+      <p id="shortcut-hint" class="banner is-info" hidden>
+        <span><span id="shortcut-hint-text"></span> <button id="set-shortcut" class="inline-link" type="button">Choisir un raccourci</button></span>
+      </p>
+      </div>
 
-    <p class="web-note">Clic droit sur une image d’un site : enregistre-la en PNG ou JPG. Une image animée devient fixe.</p>
-    <p id="version" class="version"></p>
+      <nav class="list" aria-label="Autres outils">
+        <button id="devices" class="list-row" type="button">
+          <span data-icon="devices"></span>
+          <span class="list-row-label">Téléphone, tablette, ordinateur<span class="list-row-meta">Ouvre la page dans un onglet à part</span></span>
+          <span data-icon="chevron"></span>
+        </button>
+        <button id="convert" class="list-row" type="button">
+          <span data-icon="convert"></span>
+          <span class="list-row-label">Convertir des images</span>
+          <span data-icon="chevron"></span>
+        </button>
+        <button id="transcribe" class="list-row" type="button">
+          <span data-icon="transcript"></span>
+          <span class="list-row-label">Transcrire une vidéo</span>
+          <span data-icon="chevron"></span>
+        </button>
+        <button id="recent" class="list-row" type="button">
+          <span data-icon="history"></span>
+          <span class="list-row-label">Captures récentes</span>
+          <span id="recent-count" class="badge recent-count" aria-hidden="true"></span>
+          <span data-icon="chevron"></span>
+        </button>
+      </nav>
+    </main>
+
+    <footer class="foot">
+      <p id="tip" class="tip" hidden>
+        <span title="Clic droit sur une image d’un site : enregistre-la en PNG ou JPG. Une image animée devient fixe.">Clic droit sur une image : PNG ou JPG<span class="visually-hidden">. Une image animée devient fixe.</span></span>
+        <button id="tip-close" class="btn-icon tip-close" type="button" aria-label="Fermer l’astuce"><span data-icon="close" data-size="14"></span></button>
+      </p>
+      <p id="version" class="version num"></p>
+    </footer>
 
     <script type="module" src="popup.js"></script>
   </body>

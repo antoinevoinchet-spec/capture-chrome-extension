@@ -3,6 +3,7 @@ import { avoidRanges, drawAnnotations } from '../annotate/render.js';
 import { CaptureGone, deleteCapture, deleteGroup, deleteTranscript, getCapture, getEdits, listCaptures, listEditKinds, listGroup, listTranscripts, saveEdits } from '../lib/db.js';
 import { downloadEnd } from '../lib/download-end.js';
 import { FORMATS, SPLITS, loadSettings, saveSettings } from '../lib/settings.js';
+import { fillIcons, icon, logo } from '../ui/icons.js';
 import { exportPdf, exportZip } from './export.js';
 import { Stitcher } from './stitcher.js';
 import { ZipTooBig } from './zip.js';
@@ -22,18 +23,8 @@ const SAVE_GONE = (edits) => `Cette capture a été supprimée dans un autre ong
 const TRIM_MOVED = 'le cadrage a changé dans un autre onglet';
 const EDITOR_TAKEN = 'Cette capture est déjà en cours d’annotation dans un autre onglet. Ferme son éditeur, puis réessaie.';
 
-const CHECK =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
-
-const CROSS =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
-
-// Pictogramme d'une transcription dans l'historique, à la place de la vignette d'image.
-const LINES =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 7h14"/><path d="M5 12h14"/><path d="M5 17h9"/></svg>';
-
-const SCISSORS =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/></svg>';
+fillIcons();
+document.querySelector('[data-logo]').replaceWith(logo(24));
 
 const els = {
   title: document.getElementById('title'),
@@ -41,6 +32,7 @@ const els = {
   saveAlert: document.getElementById('save-alert'),
   editorAlert: document.getElementById('editor-alert'),
   copyCurrent: document.getElementById('copy-current'),
+  annotateCurrent: document.getElementById('annotate-current'),
   downloadAll: document.getElementById('download-all'),
   export: document.getElementById('export'),
   exportMenu: document.getElementById('export-menu'),
@@ -128,6 +120,7 @@ async function init() {
   updateFormatHint();
   els.downloadAll.addEventListener('click', () => downloadParts(parts.map((_, i) => i), els.downloadAll));
   els.copyCurrent.addEventListener('click', () => copyPart(currentIndex, els.copyCurrent));
+  els.annotateCurrent.addEventListener('click', () => annotate(currentIndex));
   setupExport();
   for (const target of [els.mat, window]) target.addEventListener('scroll', scheduleCurrent, { passive: true });
   window.addEventListener('resize', scheduleCurrent);
@@ -321,6 +314,7 @@ async function editUnderLock(captureId, top) {
       if (!framed) els.parts.replaceChildren();
     },
     onCopy: (partIndex) => copyPart(partIndex, null),
+    onDownload: (partIndex) => downloadParts([partIndex], null),
     onClose: () => closeAnnotate(captureId, top),
     onRefuse: (message) => toast(message),
     // Après un changement de cadrage : `parts` suit, pour que la copie faite depuis l'éditeur découpe bien ce qui est affiché.
@@ -368,7 +362,7 @@ async function closeAnnotate(captureId, top) {
   // Un cadrage a pu retirer le point de départ : la première image prend le focus.
   const index = Math.max(0, parts.findLastIndex((part) => part.top <= top));
   // Après un recalcul (parfois long), le focus revient sans faire défiler la page là où l'on a pu aller entre-temps.
-  els.parts.querySelectorAll('figure.part')[index]?.querySelector('.annotate')?.focus({ preventScroll: waited });
+  els.parts.querySelectorAll('figure.part')[index]?.querySelector('.part-more')?.focus({ preventScroll: waited });
 }
 
 // Une écriture à la fois, dans l'ordre. Une écriture qui échoue n'empêche pas la suivante, qui réécrit tout.
@@ -461,7 +455,7 @@ async function layoutParts() {
   els.splitHint.textContent =
     parts.length > 1
       ? `${parts.length} images, ${px(tallest)} px de haut au plus.`
-      : `Une seule image de ${px(output.height)} px de haut.`;
+      : `1 image de ${px(output.height)} px de haut.`;
   els.downloadAll.textContent = parts.length > 1 ? `Tout télécharger (${parts.length} images)` : 'Télécharger l’image';
   els.downloadAll.disabled = false;
   els.export.disabled = false;
@@ -496,7 +490,9 @@ async function layoutParts() {
 // ou un changement de capture.
 function setAnnotateEnabled() {
   const enabled = !planning && !leaving && !exportControl;
-  for (const el of [...els.parts.querySelectorAll('.annotate'), els.menu.querySelector('[data-action="annotate"]')]) el.disabled = !enabled;
+  for (const el of [...document.querySelectorAll('.annotate'), els.menu.querySelector('[data-action="annotate"]')]) el.disabled = !enabled;
+  // Le bouton de l'en-tête vise l'image courante : sans image, il n'a rien à annoter.
+  if (!parts.length) els.annotateCurrent.disabled = true;
 }
 
 function partCard(index, canvas) {
@@ -507,14 +503,14 @@ function partCard(index, canvas) {
 
   const caption = document.createElement('figcaption');
   const name = text(parts.length > 1 ? `Image ${index + 1} sur ${parts.length}` : 'Image unique', 'part-name');
-  const size = text(`${px(width)} × ${px(parts[index].height)} px`, 'part-size');
-  const actions = document.createElement('span');
-  actions.className = 'part-actions';
-  const copy = button('Copier', 'ghost', () => copyPart(index, copy));
-  const save = button('Télécharger', 'ghost part-save', () => downloadParts([index], save));
-  const note = button('Annoter', 'ghost annotate', () => annotate(index));
-  actions.append(copy, save, note);
-  caption.append(name, size, actions);
+  const size = text(`${px(width)} × ${px(parts[index].height)} px`, 'part-size num');
+  // Un seul bouton par image : il ouvre le menu de l'image (Copier, Télécharger, Annoter), comme le clic droit.
+  const more = button('', 'btn-icon part-more', (event) => openMenu(event, index, more));
+  more.setAttribute('aria-label', `Actions sur l’image ${index + 1}`);
+  more.setAttribute('aria-haspopup', 'menu');
+  more.title = 'Copier, télécharger ou annoter cette image';
+  more.append(icon('more'));
+  caption.append(name, size, more);
 
   const sheet = document.createElement('div');
   sheet.className = 'sheet';
@@ -532,7 +528,7 @@ function cutLine(index) {
   line.className = 'cut';
   line.setAttribute('role', 'separator');
   line.setAttribute('aria-label', `Coupe entre l’image ${index} et l’image ${index + 1}`);
-  line.innerHTML = SCISSORS;
+  line.append(icon('scissors', 20));
   return line;
 }
 
@@ -757,13 +753,17 @@ function setupCopyGestures() {
   for (const type of ['wheel', 'blur', 'resize']) window.addEventListener(type, closeMenu, { passive: true });
 }
 
-function openMenu(event, index) {
+// Clic droit sur l'image : le menu s'ouvre sous le pointeur. Bouton « ⋯ » (`anchor`) : sous le bouton, aligné à sa droite.
+function openMenu(event, index, anchor) {
   event.preventDefault();
   menuIndex = index;
   els.menu.hidden = false;
   const { width, height } = els.menu.getBoundingClientRect();
-  els.menu.style.left = `${Math.min(event.clientX, window.innerWidth - width - 8)}px`;
-  els.menu.style.top = `${Math.min(event.clientY, window.innerHeight - height - 8)}px`;
+  const box = anchor?.getBoundingClientRect();
+  const x = box ? box.right - width : event.clientX;
+  const y = box ? box.bottom + 4 : event.clientY;
+  els.menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - width - 8))}px`;
+  els.menu.style.top = `${Math.min(y, window.innerHeight - height - 8)}px`;
   els.menu.querySelector('button').focus();
 }
 
@@ -799,6 +799,7 @@ function updateCurrent() {
   if (!els.copyCurrent.disabled) {
     els.copyCurrent.textContent = parts.length > 1 ? `Copier l’image ${index + 1}` : 'Copier l’image';
   }
+  els.annotateCurrent.querySelector('.label').textContent = parts.length > 1 ? `Annoter l’image ${index + 1}` : 'Annoter l’image';
 }
 
 async function saveBlob(blob, filename) {
@@ -878,7 +879,7 @@ function transcriptEntry(t) {
   entry.dataset.videoId = t.videoId;
   const icon = document.createElement('span');
   icon.className = 'history-icon';
-  icon.innerHTML = LINES;
+  icon.append(iconOf('transcript', 20));
   const title = text(t.title || 'Vidéo YouTube', 'history-title');
   title.id = `history-transcript-${t.videoId}`;
   const meta = text('', 'history-meta');
@@ -892,7 +893,7 @@ function transcriptEntry(t) {
   remove.setAttribute('aria-label', 'Supprimer cette transcription');
   remove.setAttribute('aria-describedby', title.id);
   remove.title = 'Supprimer cette transcription';
-  remove.innerHTML = CROSS;
+  remove.append(iconOf('close', 14));
   item.append(entry, remove);
   return item;
 }
@@ -939,7 +940,7 @@ function historyEntry(capture) {
   remove.setAttribute('aria-label', removal);
   remove.setAttribute('aria-describedby', title.id);
   remove.title = removal;
-  remove.innerHTML = CROSS;
+  remove.append(iconOf('close', 14));
 
   item.append(entry, remove);
   showMeta(meta, rowKind(capture.id));
@@ -1146,6 +1147,8 @@ function showEmpty(title, message) {
   els.export.disabled = true;
   els.copyCurrent.textContent = 'Copier l’image';
   els.copyCurrent.disabled = true;
+  els.annotateCurrent.querySelector('.label').textContent = 'Annoter l’image';
+  els.annotateCurrent.disabled = true;
   const box = document.createElement('div');
   box.className = 'empty';
   const heading = document.createElement('h2');
@@ -1181,7 +1184,7 @@ function toast(message, { success = false, action, lasting = false } = {}) {
   if (success) {
     const icon = document.createElement('span');
     icon.className = 'toast-icon';
-    icon.innerHTML = CHECK;
+    icon.append(iconOf('check'));
     nodes.unshift(icon);
   }
   if (action) nodes.push(button(action.label, 'toast-action', action.run));
@@ -1200,6 +1203,11 @@ function hostOf(url) {
   } catch {
     return '';
   }
+}
+
+// `icon` est aussi le nom de variables locales de ce fichier : on passe par cet alias.
+function iconOf(name, size) {
+  return icon(name, size);
 }
 
 function text(content, className) {

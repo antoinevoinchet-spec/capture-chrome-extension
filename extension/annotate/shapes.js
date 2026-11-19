@@ -28,7 +28,7 @@ export const TOOLS = [
 ];
 
 const INK = COLORS.black.hex;
-const FONT = '"Avenir Next", Avenir, Helvetica, Arial, sans-serif';
+const FONT = 'system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif';
 const HIGHLIGHT_OPACITY = 0.4;
 // Les tracés se saisissent à l'écran sur une zone au moins aussi large que 12 points.
 const HIT_POINTS = 12;

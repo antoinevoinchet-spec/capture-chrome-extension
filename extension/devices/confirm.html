@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Téléphone, tablette, ordinateur · Capture</title>
+    <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="../ui/components.css" />
+    <link rel="stylesheet" href="confirm.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <span data-logo></span>
+      <h1 class="app-header-title">Téléphone, tablette, ordinateur</h1>
+    </header>
+    <main class="confirm">
+      <span data-icon="devices" data-size="24"></span>
+      <h2 class="confirm-title">Avant la première capture sur trois appareils</h2>
+      <p class="confirm-lead">Capture prend trois images de cette page : sur téléphone, sur tablette et sur ordinateur.</p>
+      <ul class="confirm-points">
+        <li><span data-icon="check"></span><span>La page est rouverte dans un onglet à part : ton onglet n’est pas touché.</span></li>
+        <li><span data-icon="info"></span><span>Chrome affiche un bandeau de débogage le temps de la capture. C’est normal.</span></li>
+        <li><span data-icon="info"></span><span>La page repart de son état initial, sans ce que tu y as saisi ou ouvert.</span></li>
+      </ul>
+      <p id="gone" class="banner is-error" role="alert" hidden><span data-icon="error"></span><span>L’onglet à capturer a été fermé. Rouvre la page, puis relance depuis l’icône.</span></p>
+      <div class="confirm-actions">
+        <button id="cancel" class="btn-secondary btn-l" type="button">Annuler</button>
+        <button id="continue" class="btn-primary btn-l" type="button">Continuer</button>
+      </div>
+      <p class="confirm-note">Ce message ne s’affiche qu’une fois.</p>
+    </main>
+    <script type="module" src="confirm.js"></script>
+  </body>
+</html>
